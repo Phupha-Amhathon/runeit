@@ -1,0 +1,27 @@
+# STM32CubeIDE / Eclipse build output
+Debug/
+Release/
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.su
+
+# STM32CubeIDE workspace/metadata (local to each machine)
+.metadata/
+.settings/language.settings.xml
+.settings/org.eclipse.cdt.codan.core.prefs
+RemoteSystemsTempFiles/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local notes/info folder (not part of the project source)
+/information/
