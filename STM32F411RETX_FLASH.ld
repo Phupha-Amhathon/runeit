@@ -39,13 +39,23 @@ ENTRY(Reset_Handler)
 _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
 
 _Min_Heap_Size = 0x200; /* required amount of heap */
-_Min_Stack_Size = 0x400; /* required amount of stack */
+_Min_Stack_Size = 0x1000; /* bumped from the default 0x400: partition_store.c
+                              stages a ~1.5KB pwd_table_t and CRC scratch on
+                              the stack in a couple of places */
 
-/* Memories definition */
+/* Memories definition
+ *
+ * FLASH is deliberately capped at 32K (sectors 0-1 only) instead of the
+ * full 512K device size: sectors 2 and 3 (0x08008000-0x0800FFFF) are
+ * reserved for the A/B password-table partitions (see partition_store.h).
+ * Keeping them out of the linker's FLASH region means a build that grows
+ * past 32K fails to link instead of silently letting firmware code
+ * overwrite partition data at runtime.
+ */
 MEMORY
 {
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
-  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 512K
+  FLASH    (rx)    : ORIGIN = 0x8000000,   LENGTH = 32K
 }
 
 /* Sections */
