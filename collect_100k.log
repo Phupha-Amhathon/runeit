@@ -1,0 +1,65 @@
+...10/400 rounds complete
+...20/400 rounds complete
+...30/400 rounds complete
+...40/400 rounds complete
+...50/400 rounds complete
+...60/400 rounds complete
+...70/400 rounds complete
+...80/400 rounds complete
+...90/400 rounds complete
+...100/400 rounds complete
+...110/400 rounds complete
+...120/400 rounds complete
+...130/400 rounds complete
+...140/400 rounds complete
+...150/400 rounds complete
+...160/400 rounds complete
+...170/400 rounds complete
+...180/400 rounds complete
+...190/400 rounds complete
+...200/400 rounds complete
+...210/400 rounds complete
+...220/400 rounds complete
+...230/400 rounds complete
+...240/400 rounds complete
+...250/400 rounds complete
+...260/400 rounds complete
+...270/400 rounds complete
+...280/400 rounds complete
+...290/400 rounds complete
+...300/400 rounds complete
+...310/400 rounds complete
+...320/400 rounds complete
+...330/400 rounds complete
+...340/400 rounds complete
+...350/400 rounds complete
+...360/400 rounds complete
+...370/400 rounds complete
+...380/400 rounds complete
+...390/400 rounds complete
+...400/400 rounds complete
+Raw session saved to collect_raw.log (165805 bytes)
+faults reported by device: 1
+Saved passwords.csv
+
+Parsed 399 passwords
+All 399 passwords match the requested length (250).
+
+total characters: 99750  distinct seen: 94 of 94
+expected per class (uniform): lower 27.7%, upper 27.7%, digit 10.6%, symbol 34.0%
+actual per class:            lower 28.3%, upper 27.0%, digit 10.5%, symbol 34.1%
+
+Shannon entropy: 6.55 bit/char (ideal 6.55 bit/char)
+(small n biases this estimate low - trust it more as n grows; n=99750 gives ~1061.2 expected hits per character)
+
+top 10 most frequent characters:
+  'x': 1227 (1.23%, expected 1.06%)
+  'h': 1221 (1.22%, expected 1.06%)
+  'p': 1185 (1.19%, expected 1.06%)
+  '~': 1182 (1.18%, expected 1.06%)
+  '$': 1178 (1.18%, expected 1.06%)
+  '^': 1178 (1.18%, expected 1.06%)
+  'F': 1173 (1.18%, expected 1.06%)
+  'v': 1168 (1.17%, expected 1.06%)
+  '\\': 1154 (1.16%, expected 1.06%)
+  'D': 1152 (1.15%, expected 1.06%)
