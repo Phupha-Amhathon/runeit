@@ -172,6 +172,9 @@ Flash `runeit.elf` with ST-LINK (via STM32CubeIDE's debugger/programmer, or
 
 ## Testing
 
-See [`TESTING.md`](TESTING.md) for how to exercise this on the real board,
-including the automated `tools/hw_test.py` script and the manual checks
-(panic button, power-cycle persistence) that can't be scripted.
+See [`TESTING.md`](TESTING.md): a bottom-up, command-by-command gdb guide for
+the real board (flash, crypto, A/B partition and encryption at rest, UART/DMA,
+application screens with full mock tables, panic-button RAM wipe), with the
+expected result and the fix for every failure. `tools/mock/` holds the mock
+tables it loads, and `tools/hw_test.py` is an optional end-to-end serial smoke
+test.

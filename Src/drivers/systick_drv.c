@@ -2,8 +2,10 @@
 #include "stm32f4xx.h"
 #include "systick_drv.h"
 
+/*driver layer timer*/
 static volatile uint32_t s_ms_ticks = 0U;
 
+/*ISR*/
 void SysTick_Handler(void)
 {
     s_ms_ticks++;
@@ -11,6 +13,7 @@ void SysTick_Handler(void)
 
 void SysTick_Drv_Init(void)
 {
+    /*Set amount of Clock cycle before Contex-m4 fire ISR, CMIS provided*/
     (void)SysTick_Config(16000000UL / 1000UL); /* HSI 16 MHz, 1 ms tick */
 }
 
