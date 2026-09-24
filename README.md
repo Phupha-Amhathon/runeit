@@ -17,10 +17,10 @@ STM32 HAL — per the course constraint, and the code is split into
 |---|---|
 | `INIT` → `MODE_SELECTION` → `RETRIEVE_MODE` | **Working**, reachable over USART2 |
 | `FIRST_MEET_*` / `MK_AUTH_*` (real MK entry + verification) | **Not implemented yet.** `INIT` currently auto-provisions a hardcoded placeholder `input_mk` (see `s_hardcoded_mk` in `Src/app/app.c`) so `RETRIEVE_MODE` could be built and tested first |
-| `GENERATE_MODE` | Stub only — undesigned in RUNEIT_V1 ("to be continued") |
+| `GENERATE_MODE` | **Implemented, host-tested only.** User picks an id, service name, character classes and length; the password is built from debiased ADC noise, encrypted with `input_mk` and committed to the inactive partition. The state-machine logic passes host simulation; the DMA sampling and the flash commit have not been run on the board yet |
 | `CHANGE_MK_MODE` | Stub only — needs real auth (above) first |
 | Panic button (PA10, EXTI) | **Working** — wipes the decrypted table in RAM and returns to `MODE_SELECTION` immediately from the ISR, at the highest interrupt priority in the system |
-| ADC | Peripheral clock/pin initialized only; no sampling yet (lands with `GENERATE_MODE`) |
+| ADC | **DMA-driven, no polling.** ADC1 on PA0 (NTC) and PA1 (LDR), sampled in 512-sample single-channel blocks by DMA2 Stream0 with a transfer-complete interrupt. Untested on the board: the bias measured on the original polling build must be re-checked with DMA sampling |
 | Crypto | Placeholder: software SHA-256 for hashing, and a SHA-256-expanded XOR keystream cipher for the table. **Not real security** — an explicit "swap for AES if time remains" TODO, not a finished design |
 
 None of this has been run on physical hardware yet — see [`TESTING.md`](TESTING.md).
@@ -59,7 +59,16 @@ Src/  drivers/   (implementations, mirrors Inc/drivers/)
     `Reset`/`Feed`/`Result` API so a CRC can be accumulated over more than
     one buffer (header fields + table) without re-assembling them
     contiguously in RAM first.
-  - `adc_drv` — clock/pin init only for now; see Status above.
+  - `adc_drv` — ADC1 channels 0 (PA0) and 1 (PA1) at a 28-cycle sample
+    time, read in blocks by DMA2 Stream0 / Channel 0 with a
+    transfer-complete interrupt at NVIC priority 3 (below the panic button
+    and the UART path). One block is single-channel, back-to-back
+    conversions, which is the timing the entropy source was characterised
+    with. API: `ADC_Drv_StartBlock` / `ADC_Drv_BlockReady`.
+  - `irq_drv` — masks and restores interrupts (PRIMASK) so the app layer
+    can protect a short critical section without touching core registers.
+    A masked interrupt such as the panic button stays pending and runs as
+    soon as the mask is restored.
 
 - **`crypto/`** — pure algorithms, no hardware or app-state dependency:
   - `sha256` — self-contained SHA-256 (FIPS 180-4), verified in this
@@ -71,6 +80,18 @@ Src/  drivers/   (implementations, mirrors Inc/drivers/)
     project's open "research crypto" item — swappable for AES later
     without touching any caller, since callers only rely on it being
     deterministic and symmetric.
+  - `rng_health` — the two continuous health tests from NIST SP 800-90B
+    4.4 (Repetition Count and Adaptive Proportion) for a raw entropy
+    source. A stuck or disconnected sensor fails them.
+  - `entropy_pool` — turns raw ADC samples into unbiased bytes. The raw ADC
+    LSB was measured as skewed as 83/17, so each channel is Von Neumann
+    debiased (two consecutive samples: 01 gives 0, 10 gives 1, 00 and 11 are
+    discarded). Eight debiased bits, alternating the two channels, make one
+    byte. Pure logic, checked on the host: the captured `adc_samples.csv`
+    (83.4% ones in the raw LSB) debiases to 49.9% ones, a synthetic 83/17
+    source to 49.8%, and a stuck source is rejected. That capture kept only
+    two bits per sample, so it says nothing about the health-test cutoffs,
+    which assume full 12-bit codes.
 
 - **`app/`** — the state machine and password-table logic; only calls into
   `drivers/` and `crypto/`, never touches a register directly:
@@ -88,6 +109,21 @@ Src/  drivers/   (implementations, mirrors Inc/drivers/)
   - `mode_retrieve` — the `RETRIEVE_MODE` sub-state machine
     (`RETRIEVE_PWD_MODE` → `SHOW_TABLE_ENTRIES` → `PWD_ID_SELECTION` →
     `SHOW_PWD_ENTRIES`, looping until the user sends `q`).
+  - `mode_generate` — the `GENERATE_MODE` sub-state machine: id, optional
+    overwrite confirmation, name, character classes (`l` `u` `d` `s`),
+    length (1-31, the most `PWD_SECRET_LEN` can hold), then non-blocking
+    sampling (temperature block, light block, repeat until enough bytes),
+    then commit. Bytes at or above the largest multiple of the charset size
+    are discarded so every character is equally likely. Nothing is
+    written if a health test fails or the panic button fires; the commit
+    runs with interrupts masked so a press cannot empty the table between
+    the check and the commit's copy, and the save is verified by re-reading
+    both partitions before "Saved" is reported. When the password is built
+    the mode reports `READY_TO_SAVE` and `app` moves to
+    `TOGGLE_PARTITION`, which calls `Mode_Generate_Commit()`: commit,
+    verify, show the password once, wipe every secret buffer, then go
+    through `INIT` so the fresh partition is re-read as the active one. A
+    cancel or an entropy fault goes straight back to `MODE_SELECTION`.
   - `app` — the top-level state machine (`APP_STATE_*` in `app_types.h`)
     tying everything together, plus the panic-button callback.
 
@@ -110,7 +146,7 @@ CR/LF is stripped by the driver).
 ```
 == MODE SELECTION ==
   1) Retrieve password
-  2) Generate password (not implemented yet)
+  2) Generate password
   3) Change master key (not implemented yet)
 Select: 1
 
@@ -128,8 +164,33 @@ Enter id to view (0-30), or 'q' to go back: q
 ...
 ```
 
-Pressing the PA10 button at any point immediately wipes the decrypted table
-from RAM and returns to `MODE_SELECTION`.
+Generate mode, saving a 16-character password at a free id:
+
+```
+Select: 2
+
+Id to write (0-30), or 'q' to go back: 5
+
+Service name (1-15 chars, empty line cancels): github
+
+Character classes: l=lower u=upper d=digit s=symbol (e.g. luds): luds
+
+Password length (1-31): 16
+
+Saved as id 5 (github).
+Password: <16 generated characters>
+
+== MODE SELECTION ==
+```
+
+An empty line cancels at any prompt. Choosing an id that is in use asks
+`Overwrite? (y/n)` first.
+
+Pressing the PA10 button at any point immediately wipes the decrypted table,
+the generated password and the entropy pool from RAM and returns to
+`MODE_SELECTION`. A save that had not started yet is abandoned.
+
+The sensors are an NTC thermistor divider on PA0 and an LDR divider on PA1.
 
 ## Building
 
@@ -167,8 +228,17 @@ Flash `runeit.elf` with ST-LINK (via STM32CubeIDE's debugger/programmer, or
   build as representing real access control.
 - The XOR keystream cipher is a placeholder, not a vetted encryption
   scheme; swapping it for AES is an open, explicitly deferred item.
-- `GENERATE_MODE` is unspecified in the source design (RUNEIT_V1.pdf marks
-  it "to be continued") and is out of scope until that design exists.
+- The generated password is sent over the serial link in clear text so the
+  user can see it once; that is a deliberate choice, not encryption in
+  transit.
+- Generated passwords are at most 31 characters and names at most 15,
+  because the frozen `pwd_entry_t` layout has 32 and 16 byte fields.
+- A health-test trip aborts the save with a message and nothing is written;
+  just generate again. The cutoffs are unchanged from the polling build, on
+  which one 400-round, roughly 100000-character run reported a single fault.
+- The Von Neumann debiasing assumes consecutive samples of one channel are
+  roughly independent. That was verified with the polling build's timing, so
+  re-measure the output bias on the DMA build before trusting it.
 
 ## Testing
 

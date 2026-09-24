@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Hardware-in-the-loop smoke test for RUNEIT over its USART2 serial protocol.
 
-Run this against a NUCLEO-F411RE flashed with the current Stage B firmware
-(see ../README.md). It drives INIT -> MODE_SELECTION -> RETRIEVE_MODE over
-the real UART link and checks the responses against the two auto-seeded
-sample entries.
+Run this against a NUCLEO-F411RE flashed with the current firmware (see
+../README.md). It drives INIT -> MODE_SELECTION -> RETRIEVE_MODE over the
+real UART link and checks the responses against the two auto-seeded sample
+entries, then exercises GENERATE_MODE: it saves a generated password at id
+30 and reads it back through RETRIEVE_MODE. That save commits to flash, so a
+run leaves entry 30 behind (a later run asks to overwrite it and says yes).
 
 IMPORTANT: reset the board (press the black RESET button, or unplug/replug
 USB) immediately before running this script. The firmware only prints the
@@ -24,6 +26,7 @@ Usage:
 Requires: pip install pyserial
 """
 import argparse
+import re
 import sys
 import time
 
@@ -68,6 +71,25 @@ def read_until_idle(ser, max_wait_s, quiet_s=QUIET_S):
     return buf.decode(errors="replace")
 
 
+def read_until_text(ser, needle, max_wait_s, quiet_s=QUIET_S):
+    """Reads until needle has arrived, then until quiet_s of silence.
+
+    Unlike read_until_idle() this does not give up during a long silent
+    stretch, such as the 16 KB sector erase inside a save.
+    """
+    deadline = time.monotonic() + max_wait_s
+    buf = b""
+    last_data = time.monotonic()
+    while time.monotonic() < deadline:
+        chunk = ser.read(ser.in_waiting or 1)
+        if chunk:
+            buf += chunk
+            last_data = time.monotonic()
+        elif needle.encode() in buf and (time.monotonic() - last_data) >= quiet_s:
+            break
+    return buf.decode(errors="replace")
+
+
 def send_line(ser, text):
     ser.write((text + "\r\n").encode())
 
@@ -106,10 +128,70 @@ def main():
         check("retrieve: 'q' returns to MODE_SELECTION",
               "== MODE SELECTION ==" in back_to_menu, actual=back_to_menu)
 
+        # GENERATE_MODE: cancel path first, then a real save that is read back
         send_line(ser, "2")
-        gen_stub = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("mode 2 (generate) reports not implemented",
-              "Not implemented" in gen_stub, actual=gen_stub)
+        id_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: asks for an id", "Id to write" in id_prompt, actual=id_prompt)
+
+        send_line(ser, "")
+        cancelled = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: empty line cancels back to MODE_SELECTION",
+              "== MODE SELECTION ==" in cancelled, actual=cancelled)
+
+        send_line(ser, "2")
+        read_until_idle(ser, STEP_TIMEOUT_S)
+        send_line(ser, "30")
+        name_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
+        if "Overwrite" in name_prompt:  # id 30 is left over from an earlier run
+            send_line(ser, "y")
+            name_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: asks for a service name", "Service name" in name_prompt, actual=name_prompt)
+
+        send_line(ser, "hwtest")
+        classes_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: asks for character classes", "Character classes" in classes_prompt,
+              actual=classes_prompt)
+
+        send_line(ser, "xyz")
+        bad_classes = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: classes without l/u/d/s are rejected", "Pick at least" in bad_classes,
+              actual=bad_classes)
+
+        send_line(ser, "luds")
+        length_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: asks for a length", "Password length" in length_prompt, actual=length_prompt)
+
+        send_line(ser, "32")
+        bad_length = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: length above 31 is rejected", "Length must be" in bad_length,
+              actual=bad_length)
+
+        send_line(ser, "20")
+        # sampling, then a 16 KB sector erase (silent), then INIT and the menu
+        saved = read_until_text(ser, "== MODE SELECTION ==", 10.0)
+        check("generate: reports the save", "Saved as id 30" in saved, actual=saved)
+        match = re.search(r"Password: (\S+)", saved)
+        generated = match.group(1) if match else ""
+        check("generate: password is 20 printable characters",
+              len(generated) == 20 and all(0x21 <= ord(c) <= 0x7E for c in generated),
+              actual=generated)
+        check("generate: returns to MODE_SELECTION afterwards",
+              "== MODE SELECTION ==" in saved, actual=saved)
+
+        send_line(ser, "1")
+        listing2 = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: new entry appears in the retrieve listing",
+              "30 - hwtest" in listing2, actual=listing2)
+        check("generate: older entries survived the commit",
+              "example.com" in listing2 and "email" in listing2, actual=listing2)
+
+        send_line(ser, "30")
+        entry30 = read_until_idle(ser, STEP_TIMEOUT_S)
+        check("generate: retrieve returns exactly the password that was shown",
+              generated != "" and f"hwtest : {generated}" in entry30, actual=entry30, expected=generated)
+
+        send_line(ser, "q")
+        read_until_idle(ser, STEP_TIMEOUT_S)
 
         send_line(ser, "3")
         change_stub = read_until_idle(ser, STEP_TIMEOUT_S)

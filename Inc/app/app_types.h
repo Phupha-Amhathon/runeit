@@ -13,8 +13,9 @@ typedef enum {
     APP_STATE_INIT = 0,
     APP_STATE_MODE_SELECTION,
     APP_STATE_RETRIEVE_MODE,
-    APP_STATE_GENERATE_MODE,   /* stub: undesigned in RUNEIT_V1 ("to be continued") */
+    APP_STATE_GENERATE_MODE,   /* ADC-noise password, see mode_generate.h */
     APP_STATE_CHANGE_MK_MODE,  /* stub: real auth (Stage C) needed first */
+    APP_STATE_TOGGLE_PARTITION, /* commits the RAM table to the other partition after a write mode */
 } app_state_t;
 
 #endif /* APP_TYPES_H */

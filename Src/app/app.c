@@ -7,6 +7,7 @@
 #include "partition_store.h"
 #include "password_table.h"
 #include "mode_retrieve.h"
+#include "mode_generate.h"
 #include "sha256.h"
 
 /* Stage-B placeholder: FIRST_MEET_xxx and MK_AUTH_xxx aren't implemented yet, so
@@ -20,7 +21,7 @@ static volatile app_state_t g_state = APP_STATE_INIT;
 static const char s_menu_text[] =
     "\r\n== MODE SELECTION ==\r\n"
     "  1) Retrieve password\r\n"
-    "  2) Generate password (not implemented yet)\r\n"
+    "  2) Generate password\r\n"
     "  3) Change master key (not implemented yet)\r\n"
     "Select: ";
 
@@ -30,6 +31,7 @@ static void App_PanicHandler(void)
      * yet, so the closest available "locked" state is MODE_SELECTION.
      * Stage C will point this at MK_AUTH_PROMPT instead. */
     Mode_Retrieve_Wipe();
+    Mode_Generate_Wipe();
     g_state = APP_STATE_MODE_SELECTION;
 }
 
@@ -135,6 +137,28 @@ void App_Run(void)
             break;
 
         case APP_STATE_GENERATE_MODE:
+            if (entered) {
+                Mode_Generate_Enter(s_hardcoded_mk, HARDCODED_MK_LEN);
+            }
+            switch (Mode_Generate_Run()) {
+            case MODE_GENERATE_READY_TO_SAVE:
+                g_state = APP_STATE_TOGGLE_PARTITION;
+                break;
+            case MODE_GENERATE_FINISHED:
+                g_state = APP_STATE_MODE_SELECTION;
+                break;
+            default:
+                break;
+            }
+            break;
+
+        case APP_STATE_TOGGLE_PARTITION:
+            /* Back through INIT afterwards so the partitions are re-read from
+             * flash, which is what makes the fresh commit the active one. */
+            Mode_Generate_Commit();
+            g_state = APP_STATE_INIT;
+            break;
+
         case APP_STATE_CHANGE_MK_MODE:
             HandleNotImplemented(entered);
             break;

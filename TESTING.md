@@ -821,7 +821,7 @@ then in the terminal: `1`, `0`, `1`, `q`; then `interrupt` and `print/x 'partiti
 | Input | Expected | Today (simulated) |
 |---|---|---|
 | `1` | RETRIEVE_MODE screen | RETRIEVE_MODE screen |
-| `2` | `Not implemented yet.` then the menu again | same |
+| `2` | GENERATE_MODE: `Id to write (0-30), or 'q' to go back:` (see L11) | same |
 | `3` | `Not implemented yet.` then the menu again | same |
 | empty line | `Unknown option.` + menu | same |
 | `x`, `0`, `9` | `Unknown option.` + menu | same |
@@ -910,7 +910,7 @@ After **Cleanup** (erase both sectors) and a reset, run on the PC:
 ```
 python3 tools/hw_test.py /dev/ttyACM0
 ```
-It expects the *default* 2-entry table, so it must run on a freshly seeded board. **Expect** `8/8 checks passed`. It is only a wrapper around T8.1/T8.5/T7.x; if it fails, the failing line names the layer.
+It expects the *default* 2-entry table, so it must run on a freshly seeded board. It also saves a generated password at id 30 (L11), so it changes flash; erase both sectors again before repeating a run that must start from the default table. **Expect** `20/20 checks passed`. It is only a wrapper around T8.1/T8.5/T7.x; if it fails, the failing line names the layer.
 
 ## T10.2 Progress report checklist
 Copy this table into your report and fill **Result** with PASS / FAIL(+gap id) / N/A and the date.
@@ -931,6 +931,7 @@ Copy this table into your report and fill **Result** with PASS / FAIL(+gap id) /
 | T8.1–8.7 | Seed, persistence, corrupt→re-seed, menu matrix (G9) | |
 | T9.1–9.5 | Button, interrupt, **RAM wipe**, RAM-wide search (G1), panic timing | |
 | T10.1 | hw_test.py | |
+| T11.1–11.8 | GENERATE_MODE and ADC DMA | |
 
 ## Known gaps these tests expose (with the fix)
 
@@ -947,7 +948,67 @@ Copy this table into your report and fill **Result** with PASS / FAIL(+gap id) /
 | G9 | menu accepts any line starting with `1`/`2`/`3` | T8.5 | compare the whole line |
 
 ## Not covered yet
-`FIRST_MEET`/`MK_AUTH` (Stage C), `GENERATE_MODE`, `CHANGE_MK_MODE`, real ADC
-sampling and AES are not implemented, so there is nothing to test. When Stage C
+`FIRST_MEET`/`MK_AUTH` (Stage C), `CHANGE_MK_MODE` and AES are not
+implemented, so there is nothing to test. When Stage C
 lands, add: wrong/right master key, panic → back to the key prompt, and wiping
 `input_mk` in RAM.
+
+---
+
+# L11 — GENERATE_MODE and ADC (DMA)
+
+**Status of this section:** the state machine, the debiasing and the health tests were run on the host against stubbed drivers (every prompt, bad input, overwrite, cancel, panic before commit, entropy fault, failed-verify and a chi-square uniformity check on a simulated 83/17 source). The register values below are computed from RM0383 and the device header, and **have not been observed on the board yet**. Wiring: NTC divider on PA0, LDR divider on PA1.
+
+## T11.1 ADC and DMA registers after init
+**Steps** halt at the menu, then read the registers.
+```
+print/x *(unsigned int*)0x40023830 & 0x00400000     # RCC_AHB1ENR: DMA2EN
+print/x *(unsigned int*)0x40012010 & 0x3f            # ADC1_SMPR2: SMP0, SMP1
+print/x *(unsigned int*)0x40012008                   # ADC1_CR2
+print/x *(unsigned int*)0x40026410                   # DMA2_S0CR
+print/x *(unsigned int*)0x40026418                   # DMA2_S0PAR
+print/x *(unsigned char*)0xE000E438                  # NVIC IPR for DMA2_Stream0 (IRQ 56)
+```
+**Expect** `0x400000`, `0x12` (28 cycles on both channels), `0x1` (ADON only, idle), `0x2c10` (MINC, PSIZE and MSIZE 16-bit, TCIE, channel 0, stream disabled), `0x4001204c` (address of `ADC1->DR`), `0x30` (priority 3).
+**If not** → `ADC_Drv_Init` in `adc_drv.c`. A priority lower than `0x30` breaks the rule that the panic button and UART outrank the ADC.
+
+## T11.2 Serial flow and input validation
+Run `python3 tools/hw_test.py` (T10.1); its generate checks cover: cancel with an empty line, `xyz` rejected as classes, length `32` rejected, a 20-character save at id 30, the entry listed by RETRIEVE_MODE, older entries intact, and retrieve returning exactly the password that was shown.
+By hand also try: id `abc`, `31`, `-1` (each `Invalid id`), a 20-character name (`Name must be 1-15`), length `0`, and an id already in use with `n` (returns to the id prompt, nothing written) and with `y`.
+
+## T11.3 Uniformity of the output
+**Steps** generate digits-only (`d`), length 31, about 30 times at different ids, and count the digits.
+**Expect** all ten digits present with no digit dominating (over 900 characters, each about 90 times; a digit under 50 or over 130 is suspicious).
+**If not** → bias in the raw source that debiasing did not remove: re-measure with `tools/` capture scripts on the `adc-entropy` branch, and revisit the 28-cycle sample time.
+
+## T11.4 The save is encrypted at rest and toggles the partition (priority #1 and #2)
+**Steps** before saving, note the active sector and version:
+```
+call (void)Partition_Store_Init()
+print 'partition_store.c'::s_active.sector
+print 'partition_store.c'::s_active.header.version
+```
+Save one password from the menu, halt, repeat the three lines.
+**Expect** the sector flips (2 to 3 or 3 to 2), the version is one higher, and `hash_mk` in the header is unchanged. Then search the new sector for the generated password with the T5.3 method, with its positive control.
+**Expect** not found in flash.
+
+## T11.5 Reset keeps the new entry
+Reset the board, open RETRIEVE_MODE, ask for the saved id. **Expect** the same password as was shown.
+
+## T11.6 Panic during GENERATE_MODE
+**Steps** enter mode 2, get to the length prompt, press PA10.
+**Expect** the `MODE SELECTION` menu at once (the button forces the state from the ISR). Halt and check `'mode_generate.c'::s_table`, `'mode_generate.c'::s_pwd` and `'mode_generate.c'::s_msg` are all zero, and that the active sector and version are unchanged (nothing was written). Repeat pressing PA10 while the save is running, which is the erase, a second or so of silence after the length: the press is served just after the commit.
+**Expect** menu, RAM wiped, and either the old data or a complete new partition, never a half-written one (compare T5.7).
+
+## T11.6b The TOGGLE_PARTITION state
+**Steps** save a password from the menu and watch the states: set a breakpoint on `Mode_Generate_Commit` and run the save.
+**Expect** it is reached only after the length is entered and sampling finished (`g_state` is `APP_STATE_TOGGLE_PARTITION`, value 5). Before it, `'mode_generate.c'::s_pwd` already holds the password, the active sector and version are still the old ones, and after `continue` the new partition is active. A cancel (empty line) or an entropy fault must never reach this breakpoint.
+
+## T11.7 Disconnected or stuck sensor writes nothing
+**Steps** tie PA0 or PA1 to GND or 3V3 with a jumper and generate.
+**Expect** `ENTROPY SOURCE FAULT - nothing was saved.` and an unchanged version. Remove the jumper and generate again to see it recover.
+A false alarm is also possible with a healthy sensor (the polling build reported 1 fault in about 100000 generated characters); repeat once before suspecting the wiring.
+**If instead a password is saved** → the health test is not seeing the stuck value: check `RNG_Health_Check` is fed every sample in `Entropy_Pool_Absorb`.
+
+## T11.8 Timing and interrupts stay healthy
+Time a 31-character save (expect well under 3 s including the erase). During a save, type a character on the terminal: it must not corrupt the next prompt, since RX DMA keeps running while the commit masks interrupts.
