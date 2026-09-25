@@ -11,9 +11,12 @@
  * USART2 (PA2=TX, PA3=RX), 115200 8N1, entirely interrupt/DMA-driven:
  * - TX: DMA1 Stream6 (mem -> USART2->DR), completion flagged by the
  *   stream's transfer-complete interrupt (no TXE polling).
- * - RX: DMA1 Stream5 (USART2->DR -> mem), a line boundary is detected by
- *   the USART IDLE-line interrupt (no RXNE polling, no software timeout
- *   timer).
+ * - RX: DMA1 Stream5 (USART2->DR -> mem). Bytes are collected by DMA; the
+ *   USART IDLE-line interrupt (no RXNE polling, no software timeout timer)
+ *   checks after each pause whether an Enter (CR or LF) has arrived, and only
+ *   then is the line complete. The terminal must therefore send CR, LF or CR+LF
+ *   at the end of each line; typing one key at a time works, and backspace
+ *   edits the line.
  */
 void USART_Drv_Init(void);
 
@@ -35,10 +38,15 @@ bool USART_Drv_RxComplete(void);
 
 /**
  * Copies the completed line (CR/LF stripped, NUL-terminated) into dst
- * (capacity dst_cap bytes) and re-arms RX for the next line. Returns the
+ * (capacity dst_cap bytes), zeroes the driver's own copy (it may have been a
+ * master key) and re-arms RX for the next line. Returns the
  * copied length (excluding the NUL). Must only be called after
  * USART_Drv_RxComplete() returns true.
  */
 uint16_t USART_Drv_TakeLine(char *dst, uint16_t dst_cap);
+
+/** Zeroes the receive buffer and re-arms RX, dropping any partial or pending
+ *  line. Interrupt-safe (used by the panic button). */
+void USART_Drv_WipeRx(void);
 
 #endif /* USART_DRV_H */

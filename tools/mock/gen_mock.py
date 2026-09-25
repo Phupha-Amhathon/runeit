@@ -43,3 +43,10 @@ write("table_unterm.bin", table({
     0: b"X" * NAME_LEN + b"secretpw".ljust(PW_LEN, b"\0"),   # name has no NUL
 }))
 write("seq64.bin", bytes(range(64)))
+
+# Stage C test data: two master keys and two deterministic salts
+write("mk_a.bin", b"validpassword1")
+write("mk_b.bin", b"newpassword22")
+write("salt_a.bin", bytes((i * 17 + 3) & 0xFF for i in range(16)))
+write("mk_long.bin", b"abcdefghijklmnopqrstuvwxyz0123456789ABCD")   # 40 printable chars (length tests)
+write("salt_b.bin", bytes((i * 29 + 101) & 0xFF for i in range(16)))

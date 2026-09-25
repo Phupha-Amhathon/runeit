@@ -1,26 +1,18 @@
 #!/usr/bin/env python3
-"""Hardware-in-the-loop smoke test for RUNEIT over its USART2 serial protocol.
+"""End-to-end serial smoke test for RUNEIT (Stage C firmware).
 
-Run this against a NUCLEO-F411RE flashed with the current Stage B firmware
-(see ../README.md). It drives INIT -> MODE_SELECTION -> RETRIEVE_MODE over
-the real UART link and checks the responses against the two auto-seeded
-sample entries.
+Drives the real menus over the board's USART2 link: login (wrong key, then
+the right one) or first-time setup on a blank device, the menu, RETRIEVE_MODE
+including malformed ids, the not-implemented stub, CHANGE_MK cancel, and
+invalid menu input.
 
-IMPORTANT: reset the board (press the black RESET button, or unplug/replug
-USB) immediately before running this script. The firmware only prints the
-MODE_SELECTION menu when it *enters* that state, not on demand -- if the
-board is already sitting idle at the menu from an earlier run, this script
-has no way to ask it to repeat that prompt, so it needs a fresh boot to
-observe.
-
-This script cannot press the PA10 panic button, and cannot power-cycle the
-board to check partition persistence -- see ../TESTING.md for those manual
-checks.
+Reset the board (RESET button or USB replug) right before running: screens are
+printed when a state is entered, not on request. The master key is passed on
+the command line and is typed on the terminal in clear, as it is for a human.
+A key derivation takes seconds, so waits are per expected text, not per pause.
 
 Usage:
-    python3 tools/hw_test.py /dev/ttyACM0
-    python3 tools/hw_test.py COM5
-
+    python3 tools/hw_test.py /dev/ttyACM0 --mk "my long master key"
 Requires: pip install pyserial
 """
 import argparse
@@ -34,95 +26,105 @@ except ImportError:
     sys.exit(1)
 
 BAUD = 115200
-BOOT_TIMEOUT_S = 5.0    # first read after reset: flash may still be erasing on first-ever boot
-STEP_TIMEOUT_S = 3.0
-QUIET_S = 0.3           # consider a response complete after this much silence
+BOOT_TIMEOUT_S = 8.0
+KDF_TIMEOUT_S = 60.0     # derivation is 1-7 s depending on build and iteration count
+STEP_TIMEOUT_S = 4.0
 
 _results = []
 
 
-def check(name, condition, actual=None, expected=None):
-    status = "PASS" if condition else "FAIL"
-    _results.append((name, condition))
-    line = f"[{status}] {name}"
+def check(name, condition, actual=""):
+    _results.append(condition)
+    print(f"[{'PASS' if condition else 'FAIL'}] {name}")
     if not condition:
-        if expected is not None:
-            line += f"\n       expected to contain: {expected!r}"
-        if actual is not None:
-            line += f"\n       actual response:      {actual!r}"
-    print(line)
+        print(f"       actual response: {actual!r}")
 
 
-def read_until_idle(ser, max_wait_s, quiet_s=QUIET_S):
-    """Reads from ser until no new bytes arrive for quiet_s, or max_wait_s elapses."""
-    deadline = time.monotonic() + max_wait_s
-    buf = b""
-    last_data = time.monotonic()
+def read_until(ser, patterns, timeout_s):
+    """Reads until any of patterns appears (or timeout). Returns (text, matched_or_None)."""
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    deadline = time.monotonic() + timeout_s
+    buf = ""
     while time.monotonic() < deadline:
         chunk = ser.read(ser.in_waiting or 1)
         if chunk:
-            buf += chunk
-            last_data = time.monotonic()
-        elif (time.monotonic() - last_data) >= quiet_s:
-            break
-    return buf.decode(errors="replace")
+            buf += chunk.decode(errors="replace")
+            for p in patterns:
+                if p in buf:
+                    time.sleep(0.15)                     # let the rest of that screen arrive
+                    buf += ser.read(ser.in_waiting or 0).decode(errors="replace")
+                    return buf, p
+    return buf, None
 
 
 def send_line(ser, text):
     ser.write((text + "\r\n").encode())
 
 
+def step(ser, line, pattern, timeout_s=STEP_TIMEOUT_S):
+    send_line(ser, line)
+    return read_until(ser, pattern, timeout_s)
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("port", help="serial device, e.g. /dev/ttyACM0 or COM5")
-    parser.add_argument("--baud", type=int, default=BAUD)
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("port")
+    ap.add_argument("--mk", required=True, help="master key (8-31 printable characters)")
+    ap.add_argument("--baud", type=int, default=BAUD)
+    args = ap.parse_args()
+    mk = args.mk
+    if not 8 <= len(mk) <= 30:
+        sys.exit("--mk must be 8-30 characters (the test appends one character to make a mismatch)")
 
-    print("Make sure you just reset the board (RESET button or USB replug) -- ")
-    print("this script needs to observe a fresh boot.\n")
-    print(f"Opening {args.port} @ {args.baud} 8N1 ...")
-
+    print("Reset the board right before running this.\n")
     with serial.Serial(args.port, args.baud, timeout=0.2) as ser:
-        boot_text = read_until_idle(ser, BOOT_TIMEOUT_S)
-        check("boot reaches MODE_SELECTION", "== MODE SELECTION ==" in boot_text,
-              actual=boot_text, expected="== MODE SELECTION ==")
+        text, hit = read_until(ser, ["== LOCKED ==", "FIRST TIME SETUP"], BOOT_TIMEOUT_S)
+        check("boot shows a login or first-setup screen", hit is not None, text)
+        if hit is None:
+            sys.exit(1)
 
-        send_line(ser, "1")
-        listing = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: table lists 'example.com'", "example.com" in listing, actual=listing)
-        check("retrieve: table lists 'email'", "email" in listing, actual=listing)
+        if hit == "FIRST TIME SETUP":
+            print("  (blank device: setting the master key)")
+            text, ok = step(ser, "short", "Invalid master key")
+            check("first setup rejects a too-short key", ok is not None, text)
+            step(ser, mk, "Confirm master key")
+            text, ok = step(ser, mk + "x", "do not match")
+            check("first setup rejects a mismatching confirmation", ok is not None, text)
+            step(ser, mk, "Confirm master key")
+            text, ok = step(ser, mk, "== MODE SELECTION ==", KDF_TIMEOUT_S)
+            check("first setup accepts a matching key and opens the menu", ok is not None, text)
+        else:
+            text, ok = step(ser, mk + "-wrong", "Wrong master key", KDF_TIMEOUT_S)
+            check("wrong master key is rejected", ok is not None, text)
+            text, ok = step(ser, mk, "== MODE SELECTION ==", KDF_TIMEOUT_S)
+            check("right master key opens the menu", ok is not None, text)
 
-        send_line(ser, "0")
-        entry0 = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: id 0 shows seeded password 'hunter2'", "hunter2" in entry0,
-              actual=entry0, expected="example.com : hunter2")
+        text, ok = step(ser, "12", "Unknown option")
+        check("menu needs the whole line ('12' rejected)", ok is not None, text)
 
-        send_line(ser, "99")
-        bad_id = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: out-of-range id is rejected", "Invalid id" in bad_id, actual=bad_id)
+        text, ok = step(ser, "1", "Enter id to view")
+        check("retrieve shows the table header", "-- Password table --" in text, text)
+        text, ok = step(ser, "abc", "Enter id to view")
+        check("retrieve rejects a non-numeric id", "Invalid id" in text and " : " not in text, text)
+        text, ok = step(ser, "99", "Enter id to view")
+        check("retrieve rejects an out-of-range id", "Invalid id" in text, text)
+        text, ok = step(ser, "q", "== MODE SELECTION ==")
+        check("'q' returns to the menu", ok is not None, text)
 
-        send_line(ser, "q")
-        back_to_menu = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: 'q' returns to MODE_SELECTION",
-              "== MODE SELECTION ==" in back_to_menu, actual=back_to_menu)
+        text, ok = step(ser, "2", "Not implemented")
+        check("option 2 (generate) is still the stub", ok is not None, text)
+        read_until(ser, "Select:", STEP_TIMEOUT_S)
 
-        send_line(ser, "2")
-        gen_stub = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("mode 2 (generate) reports not implemented",
-              "Not implemented" in gen_stub, actual=gen_stub)
+        text, ok = step(ser, "3", "New master key")
+        check("option 3 opens change master key", ok is not None, text)
+        text, ok = step(ser, "", "== MODE SELECTION ==")
+        check("an empty line cancels change master key", "Cancelled" in text and ok is not None, text)
 
-        send_line(ser, "3")
-        change_stub = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("mode 3 (change MK) reports not implemented",
-              "Not implemented" in change_stub, actual=change_stub)
-
-    passed = sum(1 for _, ok in _results if ok)
-    total = len(_results)
-    print(f"\n{passed}/{total} checks passed")
-    print("\nNot covered by this script -- see TESTING.md for manual steps:")
-    print("  - PA10 panic button wipes RAM and returns to the menu")
-    print("  - Power-cycle persistence of the committed partition")
-    sys.exit(0 if passed == total else 1)
+    passed = sum(_results)
+    print(f"\n{passed}/{len(_results)} checks passed")
+    print("Not covered here: panic button, change of key (destructive), power cycle. See TESTING.md.")
+    sys.exit(0 if passed == len(_results) else 1)
 
 
 if __name__ == "__main__":

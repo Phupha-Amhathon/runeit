@@ -2,6 +2,9 @@
 #include "stm32f4xx.h"
 #include <string.h>
 #include "usart_drv.h"
+#include "secure_zero.h"
+#include "line_buf.h"
+#include "critical_drv.h"
 
 /* USART2 <-> DMA1 request mapping on STM32F411: TX = Stream6/Ch4, RX = Stream5/Ch4 */
 #define USART_DMA_TX_STREAM   DMA1_Stream6
@@ -13,6 +16,9 @@ static volatile bool s_rx_complete = false;
 
 static uint8_t s_rx_buf[USART_DRV_RX_LINE_MAX];
 static volatile uint16_t s_rx_len = 0U;
+/* The previous line ended with a CR that was the last byte received, so an LF
+ * arriving on its own next belongs to that line and must not start a new one. */
+static volatile bool s_swallow_lf = false;
 
 static void RxStream_Arm(void)
 {
@@ -108,21 +114,35 @@ bool USART_Drv_RxComplete(void)
 
 uint16_t USART_Drv_TakeLine(char *dst, uint16_t dst_cap)
 {
-    uint16_t len = s_rx_len;
+    size_t received = s_rx_len;
+    size_t start = LineBuf_Start(s_rx_buf, received, s_swallow_lf);
+    size_t end = LineBuf_FindEnd(s_rx_buf, start, received);
+    uint16_t len = (uint16_t)LineBuf_Extract(s_rx_buf, start, end, dst, dst_cap);
+    uint32_t saved;
 
-    /* strip trailing CR/LF the user's terminal sent */
-    while ((len > 0U) && ((s_rx_buf[len - 1U] == '\r') || (s_rx_buf[len - 1U] == '\n'))) {
-        len--;
-    }
-    if (len >= dst_cap) {
-        len = dst_cap - 1U;
-    }
-    memcpy(dst, s_rx_buf, len);
-    dst[len] = '\0';
+    s_swallow_lf = (end < received) && (s_rx_buf[end] == (uint8_t)'\r') && ((end + 1U) == received);
 
+    /* Re-arm and clear the flag as one step, so an interrupt cannot slip in
+     * between and hand out the old line a second time. */
+    saved = Critical_Enter();
+    Secure_Zero(s_rx_buf, sizeof(s_rx_buf));
+    s_rx_len = 0U;
     s_rx_complete = false;
     RxStream_Arm();
+    Critical_Exit(saved);
     return len;
+}
+
+void USART_Drv_WipeRx(void)
+{
+    uint32_t saved = Critical_Enter();
+
+    Secure_Zero(s_rx_buf, sizeof(s_rx_buf));
+    s_rx_len = 0U;
+    s_rx_complete = false;
+    s_swallow_lf = false;
+    RxStream_Arm();
+    Critical_Exit(saved);
 }
 
 void DMA1_Stream6_IRQHandler(void)
@@ -147,19 +167,24 @@ void DMA1_Stream5_IRQHandler(void)
 void USART2_IRQHandler(void)
 {
     if ((USART2->SR & USART_SR_IDLE) != 0U) {
+        size_t received;
+        size_t start;
+
         (void)USART2->SR;
         (void)USART2->DR; /* required sequence to clear the IDLE flag */
 
-        USART_DMA_RX_STREAM->CR &= ~DMA_SxCR_EN;
-        while ((USART_DMA_RX_STREAM->CR & DMA_SxCR_EN) != 0U) {
-            /* wait for hardware to actually disable the stream */
-        }
-        s_rx_len = USART_DRV_RX_LINE_MAX - (uint16_t)USART_DMA_RX_STREAM->NDTR;
-        if (s_rx_len > 0U) {
+        /* The line is only finished by Enter (CR/LF). A pause without one
+         * (typing one key at a time, or the text and its Enter sent as two
+         * writes) leaves the DMA running and keeps collecting. */
+        received = (size_t)USART_DRV_RX_LINE_MAX - (size_t)USART_DMA_RX_STREAM->NDTR;
+        start = LineBuf_Start(s_rx_buf, received, s_swallow_lf);
+        if (LineBuf_FindEnd(s_rx_buf, start, received) < received) {
+            USART_DMA_RX_STREAM->CR &= ~DMA_SxCR_EN;
+            while ((USART_DMA_RX_STREAM->CR & DMA_SxCR_EN) != 0U) {
+                /* wait for hardware to actually disable the stream */
+            }
+            s_rx_len = (uint16_t)(USART_DRV_RX_LINE_MAX - (uint16_t)USART_DMA_RX_STREAM->NDTR);
             s_rx_complete = true;
-        } else {
-            /* idle with nothing received yet (e.g. line noise): just re-arm */
-            RxStream_Arm();
         }
     }
 }
