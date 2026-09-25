@@ -154,6 +154,12 @@ void USART2_IRQHandler(void)
         while ((USART_DMA_RX_STREAM->CR & DMA_SxCR_EN) != 0U) {
             /* wait for hardware to actually disable the stream */
         }
+        /* Disabling the stream mid-transfer also raises its TC flag. Left set,
+         * DMA1_Stream5_IRQHandler would mistake it for a full buffer and
+         * overwrite the length computed below with the buffer size. */
+        DMA1->HIFCR = DMA_HIFCR_CTCIF5 | DMA_HIFCR_CHTIF5 | DMA_HIFCR_CTEIF5 |
+                      DMA_HIFCR_CDMEIF5 | DMA_HIFCR_CFEIF5;
+
         s_rx_len = USART_DRV_RX_LINE_MAX - (uint16_t)USART_DMA_RX_STREAM->NDTR;
         if (s_rx_len > 0U) {
             s_rx_complete = true;
