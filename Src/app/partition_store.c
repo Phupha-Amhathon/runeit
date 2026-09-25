@@ -4,7 +4,7 @@
 #include "flash_drv.h"
 #include "crc_drv.h"
 #include "xor_cipher.h"
-#include "sha256.h"
+#include "secure_zero.h"
 
 #define CRC_CHUNK_LEN 128U
 
@@ -68,28 +68,33 @@ const partition_info_t *Partition_Store_Active(void)
     return s_have_active ? &s_active : NULL;
 }
 
-bool Partition_Store_Load(const uint8_t *input_mk, uint32_t mk_len, pwd_table_t *out_table)
+bool Partition_Store_Load(const uint8_t enc_key[PARTITION_KEY_LEN], pwd_table_t *out_table)
 {
     if (!s_have_active) {
         return false;
     }
 
     Flash_Drv_Read(s_active.addr + (uint32_t)sizeof(partition_header_t),
-                    (uint8_t *)out_table, sizeof(*out_table));
-    XorCipher_Apply((uint8_t *)out_table, sizeof(*out_table), input_mk, mk_len, s_active.header.version);
+                   (uint8_t *)out_table, sizeof(*out_table));
+    XorCipher_Apply((uint8_t *)out_table, sizeof(*out_table),
+                    enc_key, PARTITION_KEY_LEN, s_active.header.version);
     return true;
 }
 
 static uint8_t s_commit_scratch[sizeof(pwd_table_t)];
 
-bool Partition_Store_Commit(const uint8_t *input_mk, uint32_t mk_len,
-                             const uint32_t hash_mk[HASH_MK_WORDS],
-                             const pwd_table_t *table)
+bool Partition_Store_Commit(const uint8_t enc_key[PARTITION_KEY_LEN],
+                            const uint8_t salt[PARTITION_SALT_LEN],
+                            uint32_t kdf_iter,
+                            const uint8_t auth[PARTITION_KEY_LEN],
+                            const pwd_table_t *table)
 {
     uint32_t target_sector = PARTITION_A_SECTOR;
     uint32_t target_addr = PARTITION_A_ADDR;
     uint32_t new_version = 1U;
     partition_header_t header;
+    partition_info_t written;
+    bool ok;
 
     if (s_have_active) {
         bool active_is_a = (s_active.sector == PARTITION_A_SECTOR);
@@ -98,12 +103,15 @@ bool Partition_Store_Commit(const uint8_t *input_mk, uint32_t mk_len,
         new_version   = s_active.header.version + 1U;
     }
 
-    memcpy(s_commit_scratch, table, sizeof(s_commit_scratch));
-    XorCipher_Apply(s_commit_scratch, sizeof(s_commit_scratch), input_mk, mk_len, new_version);
+    (void)memcpy(s_commit_scratch, table, sizeof(s_commit_scratch));
+    XorCipher_Apply(s_commit_scratch, sizeof(s_commit_scratch),
+                    enc_key, PARTITION_KEY_LEN, new_version);
 
     header.magic = PARTITION_MAGIC;
     header.version = new_version;
-    memcpy(header.hash_mk, hash_mk, sizeof(header.hash_mk));
+    header.kdf_iter = kdf_iter;
+    (void)memcpy(header.salt, salt, sizeof(header.salt));
+    (void)memcpy(header.auth, auth, sizeof(header.auth));
 
     CRC_Drv_Reset();
     CRC_Drv_Feed((const uint8_t *)&header, Partition_HeaderCrcLen());
@@ -114,10 +122,14 @@ bool Partition_Store_Commit(const uint8_t *input_mk, uint32_t mk_len,
     Flash_Drv_Write(target_addr, (const uint8_t *)&header, sizeof(header));
     Flash_Drv_Write(target_addr + (uint32_t)sizeof(header), s_commit_scratch, sizeof(s_commit_scratch));
 
-    s_active.valid = true;
-    s_active.sector = target_sector;
-    s_active.addr = target_addr;
-    s_active.header = header;
-    s_have_active = true;
-    return true;
+    Secure_Zero(s_commit_scratch, sizeof(s_commit_scratch));
+
+    /* Trust flash, not the write calls: only switch to the new partition if
+     * what is really stored validates and carries the version we wrote. */
+    ok = ReadSlot(target_sector, target_addr, &written) && (written.header.version == new_version);
+    if (ok) {
+        s_active = written;
+        s_have_active = true;
+    }
+    return ok;
 }

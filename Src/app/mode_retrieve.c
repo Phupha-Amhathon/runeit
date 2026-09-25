@@ -1,9 +1,8 @@
-#include <stdlib.h>
-#include <string.h>
 #include "mode_retrieve.h"
-#include "partition_store.h"
+#include "session.h"
 #include "password_table.h"
 #include "usart_drv.h"
+#include "secure_zero.h"
 
 typedef enum {
     RETRIEVE_SUB_SHOW_TABLE = 0,
@@ -19,15 +18,41 @@ static void SendIdPrompt(void)
     (void)USART_Drv_SendString("\r\nEnter id to view (0-30), or 'q' to go back: ");
 }
 
-void Mode_Retrieve_Enter(const uint8_t *input_mk, uint32_t mk_len)
+bool Mode_Retrieve_Enter(void)
 {
-    (void)Partition_Store_Load(input_mk, mk_len, &s_table);
     s_sub = RETRIEVE_SUB_SHOW_TABLE;
+    if (!Session_LoadTable(&s_table)) {
+        Mode_Retrieve_Wipe();
+        return false;
+    }
+    return true;
 }
 
 void Mode_Retrieve_Wipe(void)
 {
-    memset(&s_table, 0, sizeof(s_table));
+    Secure_Zero(&s_table, sizeof(s_table));
+}
+
+/* Optional leading spaces, then 1-2 decimal digits and nothing else. Anything
+ * else (letters, "0x5", "-1", a number too long to be an id) is rejected as
+ * PWD_TABLE_MAX_ENTRIES, which the Show function reports as an invalid id. */
+static uint32_t ParseId(const char *line)
+{
+    uint32_t value = 0U;
+    uint32_t digits = 0U;
+
+    while (*line == ' ') {
+        line++;
+    }
+    while ((*line >= '0') && (*line <= '9')) {
+        value = (value * 10U) + (uint32_t)(*line - '0');
+        digits++;
+        line++;
+    }
+    if ((digits == 0U) || (digits > 2U) || (*line != '\0')) {
+        value = PWD_TABLE_MAX_ENTRIES;
+    }
+    return value;
 }
 
 bool Mode_Retrieve_Run(void)
@@ -46,10 +71,10 @@ bool Mode_Retrieve_Run(void)
             (void)USART_Drv_TakeLine(line, sizeof(line));
             if ((line[0] == 'q') || (line[0] == 'Q') || (line[0] == '\0')) {
                 Mode_Retrieve_Wipe();
+                Password_Table_WipeScratch();
                 return true; /* mode_op_done -> back to MODE_SELECTION */
             }
-            uint32_t id = (uint32_t)strtoul(line, NULL, 10);
-            Password_Table_ShowEntry(&s_table, id);
+            Password_Table_ShowEntry(&s_table, ParseId(line));
             SendIdPrompt();
         }
         break;

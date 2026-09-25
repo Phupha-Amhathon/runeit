@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "password_table.h"
 #include "usart_drv.h"
+#include "secure_zero.h"
 
 /* Built up with snprintf (pure formatting, no I/O) and sent as one DMA
  * transfer so a multi-line listing is a single atomic USART_Drv_Send(). */
@@ -11,6 +12,11 @@ static char s_line_buf[LINE_BUF_LEN];
 void Password_Table_InitEmpty(pwd_table_t *table)
 {
     memset(table, 0, sizeof(*table));
+}
+
+void Password_Table_WipeScratch(void)
+{
+    Secure_Zero(s_line_buf, sizeof(s_line_buf));
 }
 
 bool Password_Table_EntryIsUsed(const pwd_entry_t *entry)

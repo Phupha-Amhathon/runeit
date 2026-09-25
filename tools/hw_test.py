@@ -1,28 +1,21 @@
 #!/usr/bin/env python3
-"""Hardware-in-the-loop smoke test for RUNEIT over its USART2 serial protocol.
+"""End-to-end serial smoke test for RUNEIT (Stage C firmware).
 
-Run this against a NUCLEO-F411RE flashed with the current firmware (see
-../README.md). It drives INIT -> MODE_SELECTION -> RETRIEVE_MODE over the
-real UART link and checks the responses against the two auto-seeded sample
-entries, then exercises GENERATE_MODE: it saves a generated password at id
-30 and reads it back through RETRIEVE_MODE. That save commits to flash, so a
-run leaves entry 30 behind (a later run asks to overwrite it and says yes).
+Drives the real menus over the board's USART2 link: login (wrong key, then
+the right one) or first-time setup on a blank device, the menu, RETRIEVE_MODE
+including malformed ids, GENERATE_MODE (a real password is generated, saved
+at id 30 and read back), CHANGE_MK cancel, and invalid menu input.
 
-IMPORTANT: reset the board (press the black RESET button, or unplug/replug
-USB) immediately before running this script. The firmware only prints the
-MODE_SELECTION menu when it *enters* that state, not on demand -- if the
-board is already sitting idle at the menu from an earlier run, this script
-has no way to ask it to repeat that prompt, so it needs a fresh boot to
-observe.
+The generate step writes to flash, so a run leaves entry 30 behind; a later
+run answers the overwrite question with 'y'.
 
-This script cannot press the PA10 panic button, and cannot power-cycle the
-board to check partition persistence -- see ../TESTING.md for those manual
-checks.
+Reset the board (RESET button or USB replug) right before running: screens are
+printed when a state is entered, not on request. The master key is passed on
+the command line and is typed on the terminal in clear, as it is for a human.
+A key derivation takes seconds, so waits are per expected text, not per pause.
 
 Usage:
-    python3 tools/hw_test.py /dev/ttyACM0
-    python3 tools/hw_test.py COM5
-
+    python3 tools/hw_test.py /dev/ttyACM0 --mk "my long master key"
 Requires: pip install pyserial
 """
 import argparse
@@ -37,174 +30,145 @@ except ImportError:
     sys.exit(1)
 
 BAUD = 115200
-BOOT_TIMEOUT_S = 5.0    # first read after reset: flash may still be erasing on first-ever boot
-STEP_TIMEOUT_S = 3.0
-QUIET_S = 0.3           # consider a response complete after this much silence
+BOOT_TIMEOUT_S = 8.0
+KDF_TIMEOUT_S = 60.0     # derivation is 1-7 s depending on build and iteration count
+STEP_TIMEOUT_S = 4.0
 
 _results = []
 
 
-def check(name, condition, actual=None, expected=None):
-    status = "PASS" if condition else "FAIL"
-    _results.append((name, condition))
-    line = f"[{status}] {name}"
+def check(name, condition, actual=""):
+    _results.append(condition)
+    print(f"[{'PASS' if condition else 'FAIL'}] {name}")
     if not condition:
-        if expected is not None:
-            line += f"\n       expected to contain: {expected!r}"
-        if actual is not None:
-            line += f"\n       actual response:      {actual!r}"
-    print(line)
+        print(f"       actual response: {actual!r}")
 
 
-def read_until_idle(ser, max_wait_s, quiet_s=QUIET_S):
-    """Reads from ser until no new bytes arrive for quiet_s, or max_wait_s elapses."""
-    deadline = time.monotonic() + max_wait_s
-    buf = b""
-    last_data = time.monotonic()
+def read_until(ser, patterns, timeout_s):
+    """Reads until any of patterns appears (or timeout). Returns (text, matched_or_None)."""
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    deadline = time.monotonic() + timeout_s
+    buf = ""
     while time.monotonic() < deadline:
         chunk = ser.read(ser.in_waiting or 1)
         if chunk:
-            buf += chunk
-            last_data = time.monotonic()
-        elif (time.monotonic() - last_data) >= quiet_s:
-            break
-    return buf.decode(errors="replace")
-
-
-def read_until_text(ser, needle, max_wait_s, quiet_s=QUIET_S):
-    """Reads until needle has arrived, then until quiet_s of silence.
-
-    Unlike read_until_idle() this does not give up during a long silent
-    stretch, such as the 16 KB sector erase inside a save.
-    """
-    deadline = time.monotonic() + max_wait_s
-    buf = b""
-    last_data = time.monotonic()
-    while time.monotonic() < deadline:
-        chunk = ser.read(ser.in_waiting or 1)
-        if chunk:
-            buf += chunk
-            last_data = time.monotonic()
-        elif needle.encode() in buf and (time.monotonic() - last_data) >= quiet_s:
-            break
-    return buf.decode(errors="replace")
+            buf += chunk.decode(errors="replace")
+            for p in patterns:
+                if p in buf:
+                    time.sleep(0.15)                     # let the rest of that screen arrive
+                    buf += ser.read(ser.in_waiting or 0).decode(errors="replace")
+                    return buf, p
+    return buf, None
 
 
 def send_line(ser, text):
     ser.write((text + "\r\n").encode())
 
 
+def step(ser, line, pattern, timeout_s=STEP_TIMEOUT_S):
+    send_line(ser, line)
+    return read_until(ser, pattern, timeout_s)
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("port", help="serial device, e.g. /dev/ttyACM0 or COM5")
-    parser.add_argument("--baud", type=int, default=BAUD)
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("port")
+    ap.add_argument("--mk", required=True, help="master key (8-31 printable characters)")
+    ap.add_argument("--baud", type=int, default=BAUD)
+    args = ap.parse_args()
+    mk = args.mk
+    if not 8 <= len(mk) <= 30:
+        sys.exit("--mk must be 8-30 characters (the test appends one character to make a mismatch)")
 
-    print("Make sure you just reset the board (RESET button or USB replug) -- ")
-    print("this script needs to observe a fresh boot.\n")
-    print(f"Opening {args.port} @ {args.baud} 8N1 ...")
-
+    print("Reset the board right before running this.\n")
     with serial.Serial(args.port, args.baud, timeout=0.2) as ser:
-        boot_text = read_until_idle(ser, BOOT_TIMEOUT_S)
-        check("boot reaches MODE_SELECTION", "== MODE SELECTION ==" in boot_text,
-              actual=boot_text, expected="== MODE SELECTION ==")
+        text, hit = read_until(ser, ["== LOCKED ==", "FIRST TIME SETUP"], BOOT_TIMEOUT_S)
+        check("boot shows a login or first-setup screen", hit is not None, text)
+        if hit is None:
+            sys.exit(1)
 
-        send_line(ser, "1")
-        listing = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: table lists 'example.com'", "example.com" in listing, actual=listing)
-        check("retrieve: table lists 'email'", "email" in listing, actual=listing)
+        if hit == "FIRST TIME SETUP":
+            print("  (blank device: setting the master key)")
+            text, ok = step(ser, "short", "Invalid master key")
+            check("first setup rejects a too-short key", ok is not None, text)
+            step(ser, mk, "Confirm master key")
+            text, ok = step(ser, mk + "x", "do not match")
+            check("first setup rejects a mismatching confirmation", ok is not None, text)
+            step(ser, mk, "Confirm master key")
+            text, ok = step(ser, mk, "== MODE SELECTION ==", KDF_TIMEOUT_S)
+            check("first setup accepts a matching key and opens the menu", ok is not None, text)
+        else:
+            text, ok = step(ser, mk + "-wrong", "Wrong master key", KDF_TIMEOUT_S)
+            check("wrong master key is rejected", ok is not None, text)
+            text, ok = step(ser, mk, "== MODE SELECTION ==", KDF_TIMEOUT_S)
+            check("right master key opens the menu", ok is not None, text)
 
-        send_line(ser, "0")
-        entry0 = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: id 0 shows seeded password 'hunter2'", "hunter2" in entry0,
-              actual=entry0, expected="example.com : hunter2")
+        text, ok = step(ser, "12", "Unknown option")
+        check("menu needs the whole line ('12' rejected)", ok is not None, text)
 
-        send_line(ser, "99")
-        bad_id = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: out-of-range id is rejected", "Invalid id" in bad_id, actual=bad_id)
+        text, ok = step(ser, "1", "Enter id to view")
+        check("retrieve shows the table header", "-- Password table --" in text, text)
+        text, ok = step(ser, "abc", "Enter id to view")
+        check("retrieve rejects a non-numeric id", "Invalid id" in text and " : " not in text, text)
+        text, ok = step(ser, "99", "Enter id to view")
+        check("retrieve rejects an out-of-range id", "Invalid id" in text, text)
+        text, ok = step(ser, "q", "== MODE SELECTION ==")
+        check("'q' returns to the menu", ok is not None, text)
 
-        send_line(ser, "q")
-        back_to_menu = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("retrieve: 'q' returns to MODE_SELECTION",
-              "== MODE SELECTION ==" in back_to_menu, actual=back_to_menu)
+        # --- GENERATE_MODE: cancel, input validation, then a real save ---
+        text, ok = step(ser, "2", "Id to write")
+        check("generate asks for an id", ok is not None, text)
+        text, ok = step(ser, "", "== MODE SELECTION ==")
+        check("an empty line cancels generate", ok is not None, text)
 
-        # GENERATE_MODE: cancel path first, then a real save that is read back
-        send_line(ser, "2")
-        id_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: asks for an id", "Id to write" in id_prompt, actual=id_prompt)
+        step(ser, "2", "Id to write")
+        text, ok = step(ser, "abc", "Invalid id")
+        check("generate rejects a non-numeric id", ok is not None, text)
+        text, ok = step(ser, "31", "Invalid id")
+        check("generate rejects an out-of-range id", ok is not None, text)
 
-        send_line(ser, "")
-        cancelled = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: empty line cancels back to MODE_SELECTION",
-              "== MODE SELECTION ==" in cancelled, actual=cancelled)
+        text, ok = step(ser, "30", ["Service name", "Overwrite"])
+        if ok == "Overwrite":                       # left over from an earlier run
+            text, ok = step(ser, "y", "Service name")
+        check("generate asks for a service name", ok is not None, text)
 
-        send_line(ser, "2")
-        read_until_idle(ser, STEP_TIMEOUT_S)
-        send_line(ser, "30")
-        name_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
-        if "Overwrite" in name_prompt:  # id 30 is left over from an earlier run
-            send_line(ser, "y")
-            name_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: asks for a service name", "Service name" in name_prompt, actual=name_prompt)
+        text, ok = step(ser, "x" * 16, "Name must be")
+        check("generate rejects a 16-character name", ok is not None, text)
+        text, ok = step(ser, "hwtest", "Character classes")
+        check("generate asks for character classes", ok is not None, text)
+        text, ok = step(ser, "xyz", "Pick at least")
+        check("generate rejects classes without l/u/d/s", ok is not None, text)
+        text, ok = step(ser, "luds", "Password length")
+        check("generate asks for a length", ok is not None, text)
+        text, ok = step(ser, "32", "Length must be")
+        check("generate rejects a length above 31", ok is not None, text)
 
-        send_line(ser, "hwtest")
-        classes_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: asks for character classes", "Character classes" in classes_prompt,
-              actual=classes_prompt)
-
-        send_line(ser, "xyz")
-        bad_classes = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: classes without l/u/d/s are rejected", "Pick at least" in bad_classes,
-              actual=bad_classes)
-
-        send_line(ser, "luds")
-        length_prompt = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: asks for a length", "Password length" in length_prompt, actual=length_prompt)
-
-        send_line(ser, "32")
-        bad_length = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: length above 31 is rejected", "Length must be" in bad_length,
-              actual=bad_length)
-
-        send_line(ser, "20")
-        # sampling, then a 16 KB sector erase (silent), then INIT and the menu
-        saved = read_until_text(ser, "== MODE SELECTION ==", 10.0)
-        check("generate: reports the save", "Saved as id 30" in saved, actual=saved)
-        match = re.search(r"Password: (\S+)", saved)
-        generated = match.group(1) if match else ""
-        check("generate: password is 20 printable characters",
+        # sampling, then a 16 KB sector erase: allow well over the usual step
+        text, ok = step(ser, "20", ["== MODE SELECTION ==", "FAULT"], KDF_TIMEOUT_S)
+        check("generate reports the save", "Saved as id 30" in text, text)
+        m = re.search(r"Password: (\S+)", text)
+        generated = m.group(1) if m else ""
+        check("the password is 20 printable characters",
               len(generated) == 20 and all(0x21 <= ord(c) <= 0x7E for c in generated),
-              actual=generated)
-        check("generate: returns to MODE_SELECTION afterwards",
-              "== MODE SELECTION ==" in saved, actual=saved)
+              generated)
 
-        send_line(ser, "1")
-        listing2 = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: new entry appears in the retrieve listing",
-              "30 - hwtest" in listing2, actual=listing2)
-        check("generate: older entries survived the commit",
-              "example.com" in listing2 and "email" in listing2, actual=listing2)
+        text, ok = step(ser, "1", "Enter id to view")
+        check("the new entry is listed by retrieve", "30 - hwtest" in text, text)
+        text, ok = step(ser, "30", "Enter id to view")
+        check("retrieve returns exactly the password that was shown",
+              generated != "" and f"hwtest : {generated}" in text, text)
+        step(ser, "q", "== MODE SELECTION ==")
 
-        send_line(ser, "30")
-        entry30 = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("generate: retrieve returns exactly the password that was shown",
-              generated != "" and f"hwtest : {generated}" in entry30, actual=entry30, expected=generated)
+        text, ok = step(ser, "3", "New master key")
+        check("option 3 opens change master key", ok is not None, text)
+        text, ok = step(ser, "", "== MODE SELECTION ==")
+        check("an empty line cancels change master key", "Cancelled" in text and ok is not None, text)
 
-        send_line(ser, "q")
-        read_until_idle(ser, STEP_TIMEOUT_S)
-
-        send_line(ser, "3")
-        change_stub = read_until_idle(ser, STEP_TIMEOUT_S)
-        check("mode 3 (change MK) reports not implemented",
-              "Not implemented" in change_stub, actual=change_stub)
-
-    passed = sum(1 for _, ok in _results if ok)
-    total = len(_results)
-    print(f"\n{passed}/{total} checks passed")
-    print("\nNot covered by this script -- see TESTING.md for manual steps:")
-    print("  - PA10 panic button wipes RAM and returns to the menu")
-    print("  - Power-cycle persistence of the committed partition")
-    sys.exit(0 if passed == total else 1)
+    passed = sum(_results)
+    print(f"\n{passed}/{len(_results)} checks passed")
+    print("Not covered here: panic button, change of key (destructive), power cycle. See TESTING.md.")
+    sys.exit(0 if passed == len(_results) else 1)
 
 
 if __name__ == "__main__":

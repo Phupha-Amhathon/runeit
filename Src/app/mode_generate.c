@@ -6,12 +6,19 @@
 #include "usart_drv.h"
 #include "adc_drv.h"
 #include "entropy_pool.h"
-#include "irq_drv.h"
+#include "session.h"
+#include "secure_zero.h"
+#include "critical_drv.h"
 #include "systick_drv.h"
 
 #define GEN_NAME_MAX_LEN      (PWD_NAME_LEN - 1U)
 #define GEN_PWD_MAX_LEN       (PWD_SECRET_LEN - 1U)
-#define GEN_MAX_ROUNDS        16U
+/* Von Neumann keeps only pairs whose two bits differ, so the yield per block
+ * is 2*p*(1-p). The PA0 sensor was measured at 96% ones, i.e. ~7.7% yield,
+ * about 5 bytes per round -- a 31-character password needs roughly 7 rounds
+ * and a bad stretch more. 16 was sized for an assumed 83% skew and made
+ * generation fail almost always on the real board. */
+#define GEN_MAX_ROUNDS        40U
 #define GEN_BLOCK_TIMEOUT_MS  200U /* a 512-sample block takes about 3 ms */
 #define GEN_LINE_LEN          32U
 #define GEN_MSG_LEN           128U
@@ -35,14 +42,12 @@ typedef enum {
     GEN_SUB_START_ROUND,
     GEN_SUB_WAIT_TEMP,
     GEN_SUB_WAIT_LIGHT,
-    GEN_SUB_READY,
+    GEN_SUB_SAVE,
 } generate_sub_state_t;
 
 static generate_sub_state_t s_sub = GEN_SUB_PROMPT_ID;
 
 static pwd_table_t s_table;
-static const uint8_t *s_mk = NULL;
-static uint32_t s_mk_len = 0U;
 static bool s_loaded = false;
 static volatile bool s_wiped = false;
 
@@ -66,11 +71,11 @@ static char s_msg[GEN_MSG_LEN];
 
 static void ClearSecrets(void)
 {
-    memset(&s_table, 0, sizeof(s_table));
-    memset(s_pwd, 0, sizeof(s_pwd));
-    memset(s_msg, 0, sizeof(s_msg));
-    memset(&s_pool, 0, sizeof(s_pool));
-    memset(s_samples, 0, sizeof(s_samples));
+    Secure_Zero(&s_table, sizeof(s_table));
+    Secure_Zero(s_pwd, sizeof(s_pwd));
+    Secure_Zero(s_msg, sizeof(s_msg));
+    Secure_Zero(&s_pool, sizeof(s_pool));
+    Secure_Zero(s_samples, sizeof(s_samples));
 }
 
 static void SendText(const char *text)
@@ -195,15 +200,13 @@ static bool WaitTimedOut(void)
     return (SysTick_Drv_Millis() - s_wait_start_ms) > GEN_BLOCK_TIMEOUT_MS;
 }
 
-void Mode_Generate_Enter(const uint8_t *input_mk, uint32_t mk_len)
+void Mode_Generate_Enter(void)
 {
     s_wiped = false;
     ClearSecrets();
     Entropy_Pool_Init(&s_pool);
 
-    s_mk = input_mk;
-    s_mk_len = mk_len;
-    s_loaded = Partition_Store_Load(input_mk, mk_len, &s_table);
+    s_loaded = Session_LoadTable(&s_table);
     s_sub = GEN_SUB_PROMPT_ID;
     s_chars_done = 0U;
     s_rounds = 0U;
@@ -310,7 +313,7 @@ static bool StepSampling(void)
         ProduceChars();
         if (s_chars_done >= s_length) {
             s_pwd[s_length] = '\0';
-            s_sub = GEN_SUB_READY;
+            s_sub = GEN_SUB_SAVE;
         } else if (s_rounds >= GEN_MAX_ROUNDS) {
             failed = ReportEntropyFault();
         } else if (ADC_Drv_StartBlock(ADC_DRV_CH_TEMP, s_samples, ENTROPY_BLOCK_SAMPLES)) {
@@ -361,71 +364,43 @@ static bool StepSampling(void)
     return failed;
 }
 
-/* The interrupt mask spans the panic check, the table update and the
- * commit's copy of the table. Otherwise a button press between the check and
- * the copy could wipe the table first, and an emptied table would be
- * committed as the newest partition. A press during the commit itself stays
- * pending and wipes the RAM copy right after. */
-static bool CommitEntry(void)
+/* The interrupt mask spans the panic check, the table update and the whole
+ * save. Partition_Store_Commit() copies the table as its first action, so an
+ * unmasked panic could zero s_table midway and publish a mostly-empty table
+ * as the newest partition -- the stale-partition failure the project notes
+ * warn about. The cost is that a button press during the flash erase is held
+ * pending for up to ~2 s; data integrity is worth more than that latency. */
+static bool SaveEntry(void)
 {
-    bool attempted = false;
-    bool committed = false;
-    const partition_info_t *active = Partition_Store_Active();
-    uint32_t previous_version = (active != NULL) ? active->header.version : 0U;
-    uint32_t saved_mask = IRQ_Drv_Disable();
+    bool saved = false;
+    uint32_t saved_mask = Critical_Enter();
 
-    if (!s_wiped && (active != NULL)) {
+    if (!s_wiped) {
         pwd_entry_t *entry = &s_table.entries[s_id];
 
-        memset(entry, 0, sizeof(*entry));
+        Secure_Zero(entry, sizeof(*entry));
         (void)strncpy(entry->name, s_name, PWD_NAME_LEN - 1U);
         (void)strncpy(entry->password, s_pwd, PWD_SECRET_LEN - 1U);
-        attempted = Partition_Store_Commit(s_mk, s_mk_len, active->header.hash_mk, &s_table);
+        /* Session_Save() reports false unless the new partition read back
+         * from flash carries the version it just wrote. */
+        saved = Session_Save(&s_table);
     }
-    IRQ_Drv_Restore(saved_mask);
-
-    if (attempted) {
-        /* Commit does not verify its own write, so re-read both partitions
-         * from flash and only trust the save if the newer version is there. */
-        Partition_Store_Init();
-        active = Partition_Store_Active();
-        committed = (active != NULL) && (active->header.version == (previous_version + 1U));
-    }
-    return committed;
+    Critical_Exit(saved_mask);
+    return saved;
 }
 
-void Mode_Generate_Commit(void)
-{
-    bool saved = CommitEntry();
-
-    if (s_wiped) {
-        /* panic fired first: the wipe already cleared the RAM state, so
-         * there is no password left to show */
-    } else if (saved) {
-        USART_Drv_WaitTxReady();
-        (void)snprintf(s_msg, sizeof(s_msg),
-                       "\r\nSaved as id %lu (%.15s).\r\nPassword: %.31s\r\n",
-                       (unsigned long)s_id, s_name, s_pwd);
-        SendMsg();
-    } else {
-        SendText("\r\nSAVE FAILED - flash did not verify, previous data is intact.\r\n");
-    }
-
-    USART_Drv_WaitTxReady();
-    ClearSecrets();
-}
-
-mode_generate_status_t Mode_Generate_Run(void)
+mode_status_t Mode_Generate_Run(void)
 {
     char line[GEN_LINE_LEN];
-    mode_generate_status_t status = MODE_GENERATE_RUNNING;
+    mode_status_t status = MODE_RUNNING;
     bool done = false;
     bool have_line = false;
+    bool saved;
 
     if (s_wiped) {
         done = true;
     } else if (!s_loaded) {
-        SendText("\r\nNo valid partition to write to.\r\n");
+        SendText("\r\nNo open session to save into.\r\n");
         done = true;
     } else {
         switch (s_sub) {
@@ -475,8 +450,21 @@ mode_generate_status_t Mode_Generate_Run(void)
             done = StepSampling();
             break;
 
-        case GEN_SUB_READY:
-            status = MODE_GENERATE_READY_TO_SAVE;
+        case GEN_SUB_SAVE:
+            saved = SaveEntry();
+            if (s_wiped) {
+                /* The panic button fired during the save: s_pwd has already
+                 * been zeroed, so there is nothing safe left to print. */
+            } else if (saved) {
+                USART_Drv_WaitTxReady();
+                (void)snprintf(s_msg, sizeof(s_msg),
+                               "\r\nSaved as id %lu (%.15s).\r\nPassword: %.31s\r\n",
+                               (unsigned long)s_id, s_name, s_pwd);
+                SendMsg();
+            } else {
+                SendText("\r\nSAVE FAILED - flash did not verify, previous data is intact.\r\n");
+            }
+            done = true;
             break;
 
         default:
@@ -488,7 +476,7 @@ mode_generate_status_t Mode_Generate_Run(void)
     if (done) {
         USART_Drv_WaitTxReady();
         ClearSecrets();
-        status = MODE_GENERATE_FINISHED;
+        status = MODE_DONE;
     }
     return status;
 }

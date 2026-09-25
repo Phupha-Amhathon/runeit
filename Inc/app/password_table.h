@@ -37,4 +37,7 @@ void Password_Table_ShowEntries(const pwd_table_t *table);
 /** Sends "name : password" for one entry id over USART2 (SHOW_PWD_ENTRIES). */
 void Password_Table_ShowEntry(const pwd_table_t *table, uint32_t id);
 
+/** Zeroes the buffer the two Show functions format plaintext into. */
+void Password_Table_WipeScratch(void);
+
 #endif /* PASSWORD_TABLE_H */
