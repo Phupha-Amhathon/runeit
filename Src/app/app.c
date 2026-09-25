@@ -115,10 +115,13 @@ void App_Run(void)
     app_state_t prev_state = APP_STATE_INIT;
 
     for (;;) {
-        bool entered = (g_state != prev_state);
-        prev_state = g_state;
+        /* One read only: the panic ISR can change g_state between reads, which
+         * would swallow the "entered" edge and skip the menu. */
+        app_state_t state = g_state;
+        bool entered = (state != prev_state);
+        prev_state = state;
 
-        switch (g_state) {
+        switch (state) {
         case APP_STATE_INIT:
             HandleInit();
             break;
