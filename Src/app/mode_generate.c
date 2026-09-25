@@ -14,10 +14,11 @@
 #define GEN_NAME_MAX_LEN      (PWD_NAME_LEN - 1U)
 #define GEN_PWD_MAX_LEN       (PWD_SECRET_LEN - 1U)
 /* Von Neumann keeps only pairs whose two bits differ, so the yield per block
- * is 2*p*(1-p). The PA0 sensor was measured at 96% ones, i.e. ~7.7% yield,
- * about 5 bytes per round -- a 31-character password needs roughly 7 rounds
- * and a bad stretch more. 16 was sized for an assumed 83% skew and made
- * generation fail almost always on the real board. */
+ * is 2*p*(1-p) and falls off sharply as the source gets more skewed. Measured
+ * in simulation, a 31-character password needs about 3 rounds at 83% ones,
+ * 9 at the ~96% the PA0 sensor shows on the board, and about 16 at 98%. The
+ * old cap of 16 was sized for 83% and left no headroom; 40 is that headroom,
+ * not a fix for an observed failure. */
 #define GEN_MAX_ROUNDS        40U
 #define GEN_BLOCK_TIMEOUT_MS  200U /* a 512-sample block takes about 3 ms */
 #define GEN_LINE_LEN          32U

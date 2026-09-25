@@ -5691,7 +5691,9 @@ you leave the mode.
 # Part 3 — GENERATE_MODE and the ADC entropy source (DMA)
 
 
-**Status of this section:** the state machine, the debiasing and the health tests were run on the host against stubbed drivers (every prompt, bad input, overwrite, cancel, panic before commit, entropy fault, failed-verify and a chi-square uniformity check on a simulated 83/17 source). The register values below are computed from RM0383 and the device header, and **have not been observed on the board yet**. Wiring: NTC divider on PA0, LDR divider on PA1.
+**Status of this section:** the state machine, the debiasing and the health tests were run on the host against stubbed drivers (every prompt, bad input, overwrite, cancel, panic before and during the save, entropy fault, timeout, failed-verify, and a chi-square uniformity check at the ~96% LSB skew measured on the board). The register values below are computed from RM0383 and the device header, and **have not been observed on the board yet**. Wiring: NTC divider on PA0, LDR divider on PA1.
+
+Every test here needs an **open session**: boot, then answer `== LOCKED ==` with the master key (or set one at `== FIRST TIME SETUP ==`) before choosing `2`.
 
 ## G1.1 ADC and DMA registers after init
 **Steps** halt at the menu, then read the registers.
@@ -5723,7 +5725,7 @@ print 'partition_store.c'::s_active.sector
 print 'partition_store.c'::s_active.header.version
 ```
 Save one password from the menu, halt, repeat the three lines.
-**Expect** the sector flips (2 to 3 or 3 to 2), the version is one higher, and `hash_mk` in the header is unchanged. Then search the new sector for the generated password with the T5.3 method, with its positive control.
+**Expect** the sector flips (2 to 3 or 3 to 2), the version is one higher, and `salt`/`auth`/`kdf_iter` in the header are unchanged (a generate saves with the session's existing key; only CHANGE_MK picks a new salt). Then search the new sector for the generated password with the C2 method, with its positive control.
 **Expect** not found in flash.
 
 ## G1.5 Reset keeps the new entry
@@ -5731,12 +5733,13 @@ Reset the board, open RETRIEVE_MODE, ask for the saved id. **Expect** the same p
 
 ## G1.6 Panic during GENERATE_MODE
 **Steps** enter mode 2, get to the length prompt, press PA10.
-**Expect** the `MODE SELECTION` menu at once (the button forces the state from the ISR). Halt and check `'mode_generate.c'::s_table`, `'mode_generate.c'::s_pwd` and `'mode_generate.c'::s_msg` are all zero, and that the active sector and version are unchanged (nothing was written). Repeat pressing PA10 while the save is running, which is the erase, a second or so of silence after the length: the press is served just after the commit.
-**Expect** menu, RAM wiped, and either the old data or a complete new partition, never a half-written one (compare T5.7).
+**Expect** `== LOCKED ==` at once — the panic destroys the session, so the machine goes back through `INIT`, not to the menu. Halt and check `'mode_generate.c'::s_table`, `'mode_generate.c'::s_pwd`, `'mode_generate.c'::s_msg` and `'mode_generate.c'::s_pool` are all zero, and that the active sector and version are unchanged (nothing was written).
+**Then** log in again and press PA10 while the save is running — the second or so of silence after the length, which is the sampling plus the sector erase. The save masks interrupts, so the press is served as soon as the commit finishes; a delay of up to about 2 s is expected here and is the documented trade-off.
+**Expect** `== LOCKED ==`, RAM wiped, no `Password:` line printed (the buffer was wiped before it could be shown), and either the old data or a complete new partition, never a half-written one (compare C2's corruption matrix).
 
-## G1.6b The TOGGLE_PARTITION state
-**Steps** save a password from the menu and watch the states: set a breakpoint on `Mode_Generate_Commit` and run the save.
-**Expect** it is reached only after the length is entered and sampling finished (`g_state` is `APP_STATE_TOGGLE_PARTITION`, value 5). Before it, `'mode_generate.c'::s_pwd` already holds the password, the active sector and version are still the old ones, and after `continue` the new partition is active. A cancel (empty line) or an entropy fault must never reach this breakpoint.
+## G1.6b The save is the last step, and only the last step
+**Steps** set a breakpoint on `SaveEntry` (file-scope static: `break mode_generate.c:SaveEntry`) and run a save.
+**Expect** it is reached only after the length is entered and sampling has finished. On entry `'mode_generate.c'::s_pwd` already holds the full password and the active sector/version are still the old ones; after `continue` the new partition is active. A cancel (empty line), an out-of-range input or an entropy fault must never reach this breakpoint.
 
 ## G1.7 Disconnected or stuck sensor writes nothing
 **Steps** tie PA0 or PA1 to GND or 3V3 with a jumper and generate.
@@ -5745,4 +5748,4 @@ A false alarm is also possible with a healthy sensor (the polling build reported
 **If instead a password is saved** → the health test is not seeing the stuck value: check `RNG_Health_Check` is fed every sample in `Entropy_Pool_Absorb`.
 
 ## G1.8 Timing and interrupts stay healthy
-Time a 31-character save (expect well under 3 s including the erase). During a save, type a character on the terminal: it must not corrupt the next prompt, since RX DMA keeps running while the commit masks interrupts.
+Time a 31-character save (expect well under 3 s including the erase). Note that the save masks interrupts, so anything typed during it is lost — the same caveat as "Deriving" and "Re-encrypting" elsewhere. Check that the next prompt is still intact afterwards.
