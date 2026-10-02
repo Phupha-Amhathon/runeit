@@ -283,9 +283,14 @@ def retrieve_bp2(session, auto_mode):
 
 
 def retrieve_bp3(session, auto_mode):
-    length = int(session.read_value("len"))
+    # Mode_Retrieve_Run() discards USART_Drv_TakeLine()'s returned length
+    # with (void), so there is no "len" variable in this frame - unlike
+    # mk_auth_trace's and first_meet/change_mk's breakpoints, which sit
+    # inside functions that take "len" as a real parameter. LineBuf_Extract
+    # NUL-terminates "line" at the real typed length, so split on the NUL
+    # instead, same as how name/password are decoded below.
     line_bytes = session.read_bytes("line", 32)
-    line_str = bytes(line_bytes[:length]).decode("ascii", errors="replace")
+    line_str = bytes(line_bytes).split(b"\x00", 1)[0].decode("ascii", errors="replace")
     entry_id = parse_id(line_str)
     print(banner(3, "SHOWN - the exact RAM content behind what serial just printed"))
     print(f"  you typed: {line_str!r} -> parsed id {entry_id}")
