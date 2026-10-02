@@ -20,6 +20,7 @@ int main(void)
 {
     SysTick_Drv_Init();
     EXTI_Drv_ButtonInit();
+    EXTI_Drv_TiltInit();
     USART_Drv_Init();
     CRC_Drv_Init();
     ADC_Drv_Init();
