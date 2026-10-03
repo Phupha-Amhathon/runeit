@@ -22,7 +22,7 @@ STM32 HAL — per the course constraint, and the code is split into
 | Panic button (PA10, EXTI) | **Working** — from the ISR: wipes the session key, the decrypted table, every buffer that held a key or a formatted password, the generated password and the entropy pool, and the UART receive buffer, then returns to the login screen. Highest interrupt priority in the system |
 | Tilt switch (PB9, EXTI) | **Implemented, not yet run on the board.** A second panic trigger. A tilt switch (KY-020) on the SDA pin of the shield's AHT10 socket calls the same panic callback on any edge. Interrupt priority 1, with its own 500 ms guard |
 | ADC | **DMA-driven, no polling.** ADC1 on PA0 (NTC) and PA1 (LDR), sampled in 512-sample single-channel blocks by DMA2 Stream0 with a transfer-complete interrupt |
-| Crypto | SHA-256, HMAC-SHA256, PBKDF2 key stretching and a SHA-256-keystream XOR cipher for the table. Verified against RFC/NIST vectors on a PC. The cipher is still the lightweight placeholder — "swap for AES if time remains" |
+| Crypto | SHA-256, HMAC-SHA256, PBKDF2 key stretching and and AES-128-CTR with an HMAC-SHA256 tag for the table (encrypt-then-MAC). Verified against RFC and NIST vectors on a PC. The tag and cipher had a first quick test on the board and worked. The full test steps have not been rewritten yet |
 
 Stage B (data path) was tested on the board; Stage C is verified by the PC
 suite in `tests/host/` and has **not yet been run on the board** — see
@@ -32,7 +32,7 @@ suite in `tests/host/` and has **not yet been run on the board** — see
 
 ```
 Inc/  drivers/   usart_drv.h  flash_drv.h  crc_drv.h  exti_drv.h  systick_drv.h  adc_drv.h  uid_drv.h  critical_drv.h
-      crypto/    sha256.h  hmac_sha256.h  kdf.h  xor_cipher.h  secure_zero.h
+      crypto/    sha256.h  hmac_sha256.h  kdf.h  aes128.h  aes_ctr.h  secure_zero.h
       app/       app.h  app_types.h  session.h  partition_store.h  password_table.h
                  mode_first_meet.h  mode_mk_auth.h  mode_retrieve.h  mode_change_mk.h
 Src/  drivers/   (implementations, mirrors Inc/drivers/)
@@ -91,12 +91,11 @@ Src/  drivers/   (implementations, mirrors Inc/drivers/)
     same. See the note in `kdf.h` on choosing the iteration count.
   - `secure_zero` — `Secure_Zero()`, a memset that the compiler may not
     optimise away; used on every buffer that held a key.
-  - `xor_cipher` — a keystream cipher: block *i* of the keystream is
-    `SHA256(key ‖ nonce ‖ i)`, XORed into the buffer. The same call both
-    encrypts and decrypts. This is the lightweight option from the
-    project's open "research crypto" item — swappable for AES later
-    without touching any caller, since callers only rely on it being
-    deterministic and symmetric.
+  - `aes128` and `aes_ctr` — AES-128 (encrypt direction only) and CTR
+    mode on top of it. The same call both encrypts and decrypts. CTR gives
+    no integrity by itself, so `partition_store` adds an HMAC-SHA256 tag
+    and checks it before it decrypts anything. The AES code is checked
+    against FIPS-197 and NIST SP 800-38A vectors on a PC.
   - `rng_health` — the two continuous health tests from NIST SP 800-90B
     4.4 (Repetition Count and Adaptive Proportion) for a raw entropy
     source. A stuck or disconnected sensor fails them.
@@ -114,9 +113,13 @@ Src/  drivers/   (implementations, mirrors Inc/drivers/)
   `drivers/` and `crypto/`, never touches a register directly:
   - `partition_store` — the A/B flash layout and its read/select/commit
     logic. Each partition (sector 2 = A, sector 3 = B) starts with a
-    self-describing 64-byte header (`magic`, `version`, `kdf_iter`,
-    `salt[16]`, `auth[32]`, `crc32`) immediately followed by the encrypted
-    table. On `INIT`, whichever
+    self-describing 112-byte header (`magic`, `version`, `kdf_iter`,
+    `salt[16]`, `auth[32]`, `iv[16]`, `tag[32]`, `crc32`) immediately followed
+    by the encrypted table. The `tag` is an HMAC-SHA256 over every header
+    field before it plus the ciphertext. The `iv` is a MAC of the header
+    fields and the plaintext, so it is different for every saved table
+    and needs no random source. The AES key and the HMAC key are both
+    derived from `enc` with fixed labels. On `INIT`, whichever
     partition has a valid magic + CRC and the *higher* version number is
     authoritative — there is no RAM-only "active partition" pointer to
     lose on reset. `Partition_Store_Commit()` always writes to the
@@ -292,8 +295,12 @@ Flash `runeit.elf` with ST-LINK (via STM32CubeIDE's debugger/programmer, or
 - Stretching slows each guess but cannot save a short or common master key
   from someone who copies the flash and guesses on a PC; use a long
   passphrase. Raising `KDF_ITERATIONS` (or the CPU clock) raises the cost.
-- The XOR keystream cipher is a placeholder, not a vetted encryption
-  scheme; swapping it for AES is an open, explicitly deferred item.
+- The table is protected by AES-128-CTR and an HMAC-SHA256 tag. The AES is
+  plain software code with a lookup table, so it is not hardened against
+  timing or power analysis. Anyone who can read the flash can still try to
+  guess a weak master key offline.
+- Partitions from the old XOR-cipher firmware (`RUN2`) are not recognised.
+  Erase sectors 2 and 3 and go through `FIRST_MEET` again.
 - The generated password is sent over the serial link in clear text so the
   user can see it once; that is a deliberate choice, not encryption in
   transit.

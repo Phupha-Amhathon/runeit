@@ -11,7 +11,8 @@
  *
  * The header carries the key-derivation parameters (salt, iteration count)
  * and the stored auth value. The cipher key itself is never stored: it is
- * derived from the master key by crypto/kdf and handed to Load()/Commit().
+ * derived from the master key by crypto/kdf and handed to Load()/Commit(),
+ * which split it into an AES-128 key and an HMAC key.
  */
 #ifndef PARTITION_STORE_H
 #define PARTITION_STORE_H
@@ -26,13 +27,16 @@
 #define PARTITION_B_SECTOR   3U
 #define PARTITION_SECTOR_SIZE 0x4000UL /* 16 KB */
 
-/* "RUN2": header format v2. A partition written by the Stage B firmware
- * ("RUN1", hardcoded key) is deliberately not recognised, so such a device
- * starts again at FIRST_MEET instead of trusting the old layout. */
-#define PARTITION_MAGIC      0x52554E32UL
+/* "RUN3": header format v3 (AES-CTR + HMAC tag). Partitions written by older
+ * firmware ("RUN1" hardcoded key, "RUN2" XOR cipher) are deliberately not
+ * recognised, so such a device starts again at FIRST_MEET instead of
+ * trusting the old layout. */
+#define PARTITION_MAGIC      0x52554E33UL
 
 #define PARTITION_SALT_LEN   16U
 #define PARTITION_KEY_LEN    32U
+#define PARTITION_IV_LEN     16U
+#define PARTITION_TAG_LEN    32U
 
 typedef struct {
     uint32_t magic;
@@ -40,6 +44,8 @@ typedef struct {
     uint32_t kdf_iter;
     uint8_t  salt[PARTITION_SALT_LEN];
     uint8_t  auth[PARTITION_KEY_LEN];
+    uint8_t  iv[PARTITION_IV_LEN];    /* AES-CTR initial counter block */
+    uint8_t  tag[PARTITION_TAG_LEN];  /* HMAC-SHA256 over every field before tag + the encrypted table */
     uint32_t crc32;    /* CRC32 over everything before this field + the encrypted table */
 } partition_header_t;
 
@@ -60,7 +66,8 @@ const partition_info_t *Partition_Store_Active(void);
  * Decrypts the active partition's table into *out_table with the derived
  * cipher key. Returns false if there is no active partition. It cannot tell
  * a wrong key from a right one -- callers must have checked the header's
- * auth value first (see session.c).
+ * auth value first (see session.c). Returns false and clears *out_table if
+ * the stored HMAC tag does not verify (flash was modified or the key is wrong).
  */
 bool Partition_Store_Load(const uint8_t enc_key[PARTITION_KEY_LEN], pwd_table_t *out_table);
 

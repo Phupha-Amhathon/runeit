@@ -1,5 +1,12 @@
 # RUNEIT — hardware test guide (bottom-up, command by command)
 
+> **Note (AES-CTR + HMAC).** The table cipher is now AES-128-CTR with an
+> HMAC-SHA256 tag, and the partition header is 112 bytes with magic `RUN3`
+> (`0x52554e33`). Every step below that mentions `XorCipher_Apply`, the
+> XOR cipher, the 64-byte header or `RUN2` is out of date. This has only been
+> checked by the PC suite in `tests/host/` and is `PREDICTED` on the board.
+> Erase sectors 2 and 3 before the first run with this firmware.
+
 > **Note (Stage C).** This guide was written for the Stage B firmware and
 > has been verified against it. Since then the hardcoded key, the auto-seed
 > and the 44-byte partition header were replaced by real authorization
