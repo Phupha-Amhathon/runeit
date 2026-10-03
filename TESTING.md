@@ -1091,7 +1091,9 @@ Your four main questions are answered in these places.
    `set {unsigned int}0x40013C10 = 0x400` and then `continue`. We use this to
    press the button at an exact moment, for example when a breakpoint is
    reached. The processor can run a few more instructions before it reacts. Two
-   presses within 200 ms count as one press.
+   presses within 200 ms count as one press. The tilt switch on PB9 has its own
+   flag. It is bit 9 of the same register, so the command is
+   `set {unsigned int}0x40013C10 = 0x200`. Two triggers within 500 ms count as one.
 6. **A reset does not clear RAM.** Old keys can stay in the stack area after a
    reset. Before you search RAM for secrets, clear the unused RAM as shown in
    C0.3, or switch the board off and on.
@@ -1228,6 +1230,13 @@ Temporary breakpoint 1, App_Run () at Src/app/app.c:126
 
 The line number can be different.
 
+The breakpoint is deleted as soon as it is hit. That is what "one-time" means.
+When a test later tells you to type `continue` from B0, the program does not stop
+at `App_Run` again. `App_Run` never returns, so the program keeps running until
+you stop it. To stop it, press the Suspend button in the STM32CubeIDE debug view
+or type `interrupt` in the gdb console. To run it again, press the Resume button
+or type `continue`.
+
 ## C0.2 Helper variables
 
 Type these four commands once for each gdb session. After a new `target remote`
@@ -1250,6 +1259,17 @@ set $z    = $buf + 900
 These commands print nothing. The quotes in `'file.c'::name` are needed for
 variables that belong to one file only. gdb cannot find such variables by name
 alone.
+
+The helper variables live inside gdb, not on the board. A new gdb session starts
+without them. This happens when you press Terminate and start the debugger
+again. If you use one of the variables before you type the four commands, gdb
+prints this message.
+
+```
+Value can't be converted to integer.
+```
+
+The fix is to type the four commands and then repeat the command that failed.
 
 ## C0.3 What the common commands do
 
@@ -1405,6 +1425,93 @@ address, without the `<` and `>` signs. The answer names the variable, for
 example `s_first + 3`. An address just below `0x20020000` that has no name is in
 the stack.
 
+**Call a function that takes a function pointer.** Several tests call
+`Kdf_DeriveKeys`. Its fifth argument is `cancel`, a pointer to a function that
+the calculation calls every 32 iterations to ask whether it must stop. The
+obvious value is `0`, which means "no function". Do not use it. On the board we
+saw that gdb puts `1` in that place when you type `0`. This is a measured result.
+We did not find out why gdb does this. It may be the bit that marks a Thumb
+function. The firmware only tests `cancel != NULL`, so it takes `1` as a real
+function.
+
+At iteration 32 the calculation then calls address 1. The processor removes the
+last bit and starts to run at address 0. That is the vector table, which holds
+numbers and not instructions. The processor runs through it until it reaches the
+empty bytes at `0x198`, and that raises a HardFault. gdb stops with a message
+like this one.
+
+```
+Program received signal SIGTRAP, Trace/breakpoint trap.
+WWDG_IRQHandler () at ../Startup/startup_stm32f411retx.s:117
+```
+
+`WWDG_IRQHandler` is not the watchdog. In this project every interrupt and fault
+without its own handler shares one function called `Default_Handler`. gdb only
+prints the first name that it finds for that address.
+
+The safe way is to pass the real function of the firmware and to make sure that
+it answers "do not stop". Type the first line to make the two counters equal. Use
+the second line in the call. The call in the third line is only an example.
+
+```
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
+print &'session.c'::KdfCancelled
+call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 2000, &'session.c'::KdfCancelled, $buf+192, $buf+224)
+```
+
+The first line copies the panic counter into the counter of the running
+operation. `KdfCancelled` answers "stop" only when the two are different. The
+second line prints the address of the function. The output looks like this. The
+address can be different on your build. The third line runs the calculation.
+
+```
+$1 = (_Bool (*)(void)) 0x800140c <KdfCancelled>
+$2 = 1
+```
+
+**Find out why the processor stopped in a fault.** If gdb stopped in
+`WWDG_IRQHandler` after a call, do not type `continue` and do not reset the
+board. The fault information is still in the processor. Type these commands.
+
+```
+x/xw 0xE000ED28
+x/xw 0xE000ED2C
+print/x $xpsr
+print/x $lr
+x/8xw $sp
+```
+
+The first line reads the register that tells the kind of fault (CFSR). The second
+line reads the register that tells whether it became a HardFault (HFSR). The
+third line shows the processor status. Its last 9 bits are the exception number,
+and 3 means HardFault. The fourth line shows the return code of the exception.
+The last line shows the values that the processor saved when the fault started.
+They are, in this order, r0, r1, r2, r3, r12, LR, PC and xPSR. The seventh value
+is the address of the instruction that caused the fault. The output looks like
+this.
+
+```
+0xe000ed28:	0x00010000
+0xe000ed2c:	0x40000000
+$1 = 0x41000003
+$2 = 0xfffffff1
+0x2001fe00:	0x00000000	0x00000237	0x00000115	0x0000102d
+0x2001fe10:	0x00000004	0x08001c27	0x00000198	0x41000020
+```
+
+Your numbers will be different. Use this table to read the first number.
+
+| First number (CFSR) | What happened | Usual cause |
+|---|---|---|
+| `0x00010000` | The processor ran a byte pattern that is not an instruction. | A jump to a wrong address, for example a wrong function pointer. |
+| `0x00020000` | The processor tried to run in the wrong instruction set. | A function pointer without the Thumb bit. |
+| `0x00000200` or `0x00008200` | The processor read or wrote a wrong address. | A wrong data pointer. |
+| `0x00001000` or `0x00000800` | The processor could not save or restore its registers on the stack. | The stack pointer is wrong or the stack overflowed. |
+
+After you read the numbers, recover in this way. Type `monitor reset` and go to
+B0 with the three commands of C0.1. Then type the four helper variables of C0.2
+again.
+
 ## C0.4 Situations that many tests start from
 
 Many tests need the board to be in a certain situation. Each test describes its
@@ -1465,9 +1572,12 @@ x/32xb $buf2+64
 ```
 
 The arguments are the password, its length (8), the salt, its length (4), the
-number of iterations (1), a cancel function (0 means none), and the place for the
-result. The first line returns 1 when it works. The second line prints the 32
-result bytes. The output looks like this.
+number of iterations (1), a cancel function, and the place for the result. Here
+the cancel function is written as `0`, and gdb passes `1` instead (see the
+paragraph about function pointers in C0.3). This is safe in this test because the
+calculation calls the cancel function only at iteration 32, and this test uses
+at most 2 iterations. The first line returns 1 when it works. The second line
+prints the 32 result bytes. The output looks like this.
 
 ```
 $1 = 1
@@ -1614,12 +1724,18 @@ second command puts the salt at `$buf+64`. gdb prints a line such as
 **Step 2. Make the keys for key A.**
 
 ```
-call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 2000, 0, $buf+128, $buf+160)
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
+call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 2000, &'session.c'::KdfCancelled, $buf+128, $buf+160)
 ```
 
-The arguments are the master key and its length, the salt, the iterations (2000),
-the cancel function (none), the place for `auth` (`$buf+128`), and the place for
-`enc` (`$buf+160`). It returns 1 when it works. This takes some seconds.
+The first line makes the panic counter and the counter of the running operation
+equal. Then the firmware function `KdfCancelled` answers "do not stop". The
+second line runs the calculation. Its arguments are the master key and its
+length, the salt, the iterations (2000), the cancel function, the place for
+`auth` (`$buf+128`), and the place for `enc` (`$buf+160`). We pass a real
+function here because gdb turns a `0` in that place into `1`, which crashes the
+processor (see the paragraph about function pointers in C0.3). The call returns 1
+when it works. It takes some seconds and gdb prints nothing until it is done.
 
 ```
 $1 = 1
@@ -1656,12 +1772,14 @@ x/32xb $buf+160
 ```
 restore tools/mock/mk_b.bin binary $buf+256
 restore tools/mock/salt_b.bin binary $buf+320
-call (int)Kdf_DeriveKeys($buf+256, 13, $buf+320, 2000, 0, $buf+384, $buf+416)
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
+call (int)Kdf_DeriveKeys($buf+256, 13, $buf+320, 2000, &'session.c'::KdfCancelled, $buf+384, $buf+416)
 print/x (CRC_Drv_Reset(), CRC_Drv_Feed($buf+384, 32), CRC_Drv_Result())
 ```
 
-The last line must print `0xc83b8b8a`. This is the CRC of the `auth` value of
-key B.
+The first two lines put key B and salt B in RAM. The third line is the same
+counter setting as in step 2. The fourth line runs the calculation for key B. The
+last line must print `0xc83b8b8a`. This is the CRC of the `auth` value of key B.
 
 Keep the board and gdb as they are. Tests C2 and C3 use these values. Key A has
 its `auth` at `$buf+128` and its `enc` at `$buf+160`, and its salt is at
@@ -1683,6 +1801,12 @@ The test **passes** when both calls return 1, the CRC of `auth` A is
   firmware.
 * **`auth` and `enc` are the same.** Both `HmacSha256` calls use the same label.
   This is serious. Fix it before you continue.
+* **gdb stops with `Program received signal SIGTRAP` in `WWDG_IRQHandler`.** The
+  processor ran into a fault, probably because the cancel function was `1` or
+  another wrong value. Check that the call in step 2 uses
+  `&'session.c'::KdfCancelled` and not `0`. Then read the fault registers as
+  described in C0.3, recover with `monitor reset`, go to B0 again, and repeat the
+  test.
 
 ## T-C1.3 How long does one key calculation take?
 
@@ -1703,13 +1827,15 @@ number.
 **Step 1. Measure 2000 iterations.**
 
 ```
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
 set $t0 = 'systick_drv.c'::s_ms_ticks
-call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 2000, 0, $buf+128, $buf+160)
+call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 2000, &'session.c'::KdfCancelled, $buf+128, $buf+160)
 print 'systick_drv.c'::s_ms_ticks - $t0
 ```
 
-The first line remembers the millisecond counter. The second line runs the
-calculation. The third line prints how many milliseconds passed. The output
+The first line makes the two counters equal, so the cancel function answers "do
+not stop". The second line remembers the millisecond counter. The third line runs
+the calculation. The last line prints how many milliseconds passed. The output
 looks like this.
 
 ```
@@ -1720,12 +1846,15 @@ $2 = 4012
 **Step 2. Measure 1000 iterations.**
 
 ```
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
 set $t0 = 'systick_drv.c'::s_ms_ticks
-call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 1000, 0, $buf+192, $buf+224)
+call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 1000, &'session.c'::KdfCancelled, $buf+192, $buf+224)
 print 'systick_drv.c'::s_ms_ticks - $t0
 ```
 
-The result should be about half of step 1.
+These are the same four lines as in step 1, with 1000 iterations and a different
+place for the results. The number that the last line prints should be about half
+of step 1.
 
 ### Result
 
@@ -1750,6 +1879,9 @@ written keep their own iteration count in the header, so old data still opens.
   screens are both wrong. Check with a stopwatch on the terminal.
 * **Step 2 is not about half of step 1.** Something other than the calculation
   takes most of the time. It can be flash wait states or the debugger.
+* **gdb stops with `Program received signal SIGTRAP` in `WWDG_IRQHandler`.** See
+  the same entry in test T-C1.2. Check that both calls use
+  `&'session.c'::KdfCancelled` and not `0`.
 
 ## T-C1.4 The calculation stops when the panic button is pressed
 
@@ -3106,14 +3238,18 @@ $1 = 5
 **Step 2. Make keys with only 500 iterations and write a partition with them.**
 
 ```
-call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 500, 0, $buf+128, $buf+160)
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
+call (int)Kdf_DeriveKeys($buf, 14, $buf+64, 500, &'session.c'::KdfCancelled, $buf+128, $buf+160)
 restore tools/mock/table_full.bin binary $tbl
 call (int)Partition_Store_Commit($buf+160, $buf+64, 500, $buf+128, &'mode_retrieve.c'::s_table)
 call (void)Partition_Store_Init()
 ```
 
-The first line makes new `auth` and `enc` values with 500 iterations. The
-partition header now says that 500 iterations were used.
+The first line makes the panic counter and the counter of the running operation
+equal. This is needed because `Session_Wipe` in step 1 raised the panic counter.
+Without it the cancel function would answer "stop". The second line makes new
+`auth` and `enc` values with 500 iterations. The partition header now says that
+500 iterations were used.
 
 **Step 3. Log in and measure the time.**
 
@@ -3203,6 +3339,11 @@ call (void)Flash_Drv_EraseSector(2)
 call (void)Flash_Drv_EraseSector(3)
 continue
 ```
+
+The first two lines erase the two partitions. The third line lets the program
+run. It does not stop at `App_Run` again, because the one-time breakpoint of B0
+is already gone. The program now runs until you press Suspend or type
+`interrupt`.
 
 * The terminal shows this screen.
 
@@ -3346,16 +3487,27 @@ The two numbers must be equal.
 **Step 3. Calculate the `auth` value again from the salt in flash.**
 
 ```
+print/x $xpsr & 0x1ff
 restore tools/mock/mk_a.bin binary $buf
-call (int)Kdf_DeriveKeys($buf, 14, (unsigned char*)0x0800800C, 2000, 0, $buf+128, $buf+160)
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
+call (int)Kdf_DeriveKeys($buf, 14, (unsigned char*)0x0800800C, 2000, &'session.c'::KdfCancelled, $buf+128, $buf+160)
 print/x (CRC_Drv_Reset(), CRC_Drv_Feed($buf+128, 32), CRC_Drv_Result())
 print/x (CRC_Drv_Reset(), CRC_Drv_Feed((unsigned char*)0x0800801C, 32), CRC_Drv_Result())
 ```
 
-The first line puts the master key text in RAM. The second line runs the key
-calculation with the salt from flash (address `0x0800800C`). The last two lines
-show the CRC of the new `auth` value and the CRC of the `auth` value in flash.
-The two numbers must be equal, for example `0x7be3a1c4` and `0x7be3a1c4`.
+The first line is a precaution. It shows the exception number of the processor.
+The answer must be `0x0`, which means that the processor is not inside an
+interrupt handler. When we halted a running program during a first attempt, the
+saved status showed that the processor had been in an interrupt handler. We do not
+know whether this matters. If the answer is not `0x0`, type `continue` and then
+`interrupt` again until it is `0x0`. The second line puts the master key text in
+RAM. The third line makes the panic counter and the counter of the running
+operation equal, so that the cancel function answers "do not stop". The fourth
+line runs the key calculation with the salt from flash (address `0x0800800C`).
+The cancel function must be the firmware function and not `0`, because gdb turns
+a `0` into `1` and the processor crashes (see C0.3). The last two lines show the
+CRC of the new `auth` value and the CRC of the `auth` value in flash. The two
+numbers must be equal, for example `0x7be3a1c4` and `0x7be3a1c4`.
 
 **Step 4. Search flash for the encryption key and for the key text.**
 
@@ -3398,6 +3550,15 @@ The test **passes** when all of this is true.
   is serious.
 * **The session key is not equal to `enc`.** The session was opened with a wrong
   value.
+* **gdb stops with `Program received signal SIGTRAP` in `WWDG_IRQHandler` during
+  step 3.** The processor ran into a fault. The usual cause is a wrong cancel
+  function in the call, so check that you used `&'session.c'::KdfCancelled` and
+  not `0`. Read the fault registers as described in C0.3. Then type
+  `monitor reset`, go to B0, and type the helper variables again. The partition
+  from T-C4.1 is still in flash, so you do not need to repeat T-C4.1. Type
+  `continue`, log in with `validpassword1` in the terminal, wait for the menu, and
+  type `interrupt`. Then repeat this test from step 1. You must log in again,
+  because step 5 compares the session key and a reset closes the session.
 
 ## T-C4.3 Login. Wrong keys, the right key and the time
 
@@ -5094,6 +5255,192 @@ This does no harm, because no secret is printed. But it looks confusing.
   formatted. The bytes may be sent, but the line buffer must still be all zeros
   afterwards. Run test T-C6.2.
 
+## T-C5.11 The tilt switch is a second panic button
+
+### What this test checks
+
+The firmware has a second panic trigger. A tilt switch is wired to PB9, which is
+the SDA pin of the shield's AHT10 socket. Any change of the pin closes the session
+in the same way as the PA10 button. This test checks the pin, the interrupt setup,
+the guard time and the behaviour. **PREDICTED.** I read the code and I expect this
+result, but I did not run it on the board.
+
+### Before you start
+
+* The tilt switch is wired as in the README. The middle pin is on VCC (3.3V), the
+  `-` pin is on GND and the `S` pin is on SDA.
+* No AHT10 or BH1750 module is plugged into the shield sockets.
+* You are logged in and the menu is shown.
+
+### Steps
+
+**Step 1. Check that the SDA pin is really PB9.**
+
+```
+interrupt
+set {unsigned int}0x40023830 |= 2
+print/x ({unsigned int}0x40020410 >> 9) & 1
+```
+
+The first line halts the board. The second line switches on the clock of port B
+(it is already on after boot, so this changes nothing). The third line reads the
+level of PB9. Run the third line again with the switch in the other position. For
+example turn the board upside down and hold it still.
+
+The answer must change between `0x0` and `0x1`. The numbers are examples.
+
+```
+$1 = 0x1
+$2 = 0x0
+```
+
+**Step 2. Check the setup of the pin and the interrupt.**
+
+```
+print/x ({unsigned int}0x40020400 >> 18) & 3
+print/x ({unsigned int}0x4002040C >> 18) & 3
+print/x ({unsigned int}0x40013810 >> 4) & 0xF
+print/x ({unsigned int}0x40013810 >> 8) & 0xF
+print/x {unsigned int}0x40013C00 & 0x200
+print/x {unsigned int}0x40013C08 & 0x200
+print/x {unsigned int}0x40013C0C & 0x200
+print/x {unsigned int}0xE000E100 & 0x800000
+print/x {unsigned char}0xE000E417
+```
+
+The lines read these values in order. The mode of PB9, its pull setting, the port
+chosen for line 9, the port chosen for line 10, the mask bit of line 9, the rising
+edge bit, the falling edge bit, the NVIC enable bit and the priority byte.
+
+The answers must be the following.
+
+```
+$1 = 0x0
+$2 = 0x1
+$3 = 0x1
+$4 = 0x0
+$5 = 0x200
+$6 = 0x200
+$7 = 0x200
+$8 = 0x800000
+$9 = 0x10
+```
+
+Answer `$3` is `0x1` for port B. Answer `$4` is `0x0` for port A, so the button on
+PA10 is still mapped. Answer `$9` is `0x10` because the board uses the upper four
+bits for the priority, so priority 1 is shown as `0x10`.
+
+**Step 3. Press the tilt trigger from gdb.**
+
+```
+print 'session.c'::s_generation
+set {unsigned int}0x40013C10 = 0x200
+continue
+```
+
+The first line prints the panic counter. The second line sets the flag of line 9,
+as if the switch had made an edge. The third line lets the processor run. The
+terminal must show the login screen.
+
+```
+== LOCKED ==
+Master key:
+```
+
+Halt the board again and look at the counter.
+
+```
+interrupt
+print 'session.c'::s_generation
+continue
+```
+
+The counter must be one higher than before.
+
+**Step 4. Tilt the real board.**
+
+Log in again and wait for the menu. Then tilt the board so that the ball rolls.
+The terminal must show the login screen. Do it again from the login screen. Nothing
+bad must happen, because the wipe can run twice.
+
+**Step 5. The guard time.**
+
+Log in, then halt the board and note the panic counter.
+
+```
+interrupt
+print 'session.c'::s_generation
+continue
+```
+
+Shake the switch for about one second. Then read the counter again.
+
+```
+interrupt
+print 'session.c'::s_generation
+continue
+```
+
+The counter must go up by one or two, and not by ten or more. One shake makes many
+edges, but the guard of 500 ms accepts at most one trigger in every 500 ms.
+
+**Step 6. The PA10 button still works.**
+
+Log in and press the real button on PA10. The terminal must show the login screen.
+Check that the counter goes up by one in the same way as in step 3.
+
+**Step 7. The first trigger after a reset is not lost.**
+
+Tilting the board within half a second after a reset is hard to do by hand. Use
+gdb instead. The first line below stops the board when `App_Run` starts, which is
+after the tilt interrupt was set up.
+
+```
+delete
+break App_Run
+monitor reset
+continue
+```
+
+The lines reset the board and stop it again at the start of `App_Run`. The reset
+happens less than a second ago, so the 500 ms guard would block a trigger if the
+firmware did not have the `s_tilt_seen` flag. Now set the flag of line 9 and let the
+processor run.
+
+```
+delete
+print 'session.c'::s_generation
+set {unsigned int}0x40013C10 = 0x200
+continue
+```
+
+The second line prints the panic counter, which is `0` after a reset. The handler
+must still call the panic callback. Halt the board with `interrupt`, print the
+counter again, and it must be `1`.
+
+### Result
+
+The test **passes** when the pin level changes with the switch, all the values in
+step 2 are right, every trigger returns to the login screen with the counter one
+higher, and a shake makes at most one trigger in every 500 ms.
+
+### If the result is different
+
+* **The level in step 1 never changes.** The wires are on the wrong pin, or the
+  shield uses another pin for SDA. Try the SCL pin, which should be PB8. In that
+  case change `9` to `8` in the commands and in `exti_drv.c`, and tell me, because
+  the code needs the matching change.
+* **The level in step 1 is always `0x1`.** The switch has no connection to GND.
+  Check the `-` wire and the position of the ball.
+* **Step 2 shows a wrong value.** `EXTI_Drv_TiltInit` was not called, so look at
+  `main.c`. If only answer `$4` is wrong, the setup of line 9 cleared the field of
+  line 10. That would be a bug in the way `EXTICR[2]` is written.
+* **The gdb trigger does nothing.** Check the answers `$5` and `$8` of step 2.
+* **One shake gives many triggers.** The guard time is too short for your switch.
+  Raise `TILT_GUARD_MS` in `exti_drv.c`.
+* **The board resets or hangs after a tilt.** A module may be plugged into the
+  AHT10 or BH1750 socket and fight with the sensor on PB9. Remove it.
+
 ---
 
 # C6 — Damage and wipe
@@ -5309,9 +5656,11 @@ continue
 
 ```
 interrupt
+print/x $xpsr & 0x1ff
 restore tools/mock/mk_a.bin binary $buf
 set var $buf[13] = '2'
-call (int)Kdf_DeriveKeys($buf, 14, (unsigned char*)0x0800800C, 2000, 0, $buf+128, $buf+160)
+set var 'session.c'::s_op_generation = 'session.c'::s_generation
+call (int)Kdf_DeriveKeys($buf, 14, (unsigned char*)0x0800800C, 2000, &'session.c'::KdfCancelled, $buf+128, $buf+160)
 set $w0 = $buf[160]
 set $w1 = $buf[161]
 set $w2 = $buf[162]
@@ -5323,8 +5672,14 @@ set $w7 = $buf[167]
 call (void*)memset($buf, 0, 1024)
 ```
 
-The second and third lines make the master key `validpassword2`, which is wrong.
-The fourth line calculates its keys with the salt that is stored in flash. The next
+The second line shows the exception number of the processor. The answer must be
+`0x0`, which means that the processor is not inside an interrupt handler. If it is
+not `0x0`, type `continue` and then `interrupt` again. The third and fourth lines
+make the master key `validpassword2`, which is wrong. The fifth line makes the panic
+counter and the counter of the running operation equal, so that the cancel function
+answers "do not stop". The sixth line calculates the keys of the wrong key with the
+salt that is stored in flash. It uses the firmware function `KdfCancelled` and not
+`0`, because gdb turns a `0` into `1` and the processor crashes (see C0.3). The next
 eight lines remember the first bytes of the `enc` value in gdb variables. The last
 line erases your own copy, so it cannot cause a false match.
 
@@ -5358,6 +5713,11 @@ The test **passes** when both searches print `Pattern not found.`, `s_authorized
 * **A hit in the stack.** The functions `Kdf_DeriveKeys` and `Session_Authenticate`
   clear their local variables only when the login works. They must also clear them
   when it fails.
+* **gdb stops with `Program received signal SIGTRAP` in `WWDG_IRQHandler` in step
+  1.** The processor ran into a fault. Check that the call uses
+  `&'session.c'::KdfCancelled` and not `0`. Read the fault registers as described
+  in C0.3, type `monitor reset`, go to B0, type the helper variables again, and
+  repeat the test from the start.
 
 ## T-C6.4 Damage that happens while the device runs is not noticed (KNOWN PROBLEM G11)
 
@@ -5641,6 +6001,7 @@ failure add the id of the known problem and the date.
 | T-C5.5 and T-C5.6 | **panic at every step of a write. The written partition and the active partition** | |
 | T-C5.7 | **power loss at every step of a write** | |
 | T-C5.8 to T-C5.10 | the real button, many panics, the listing quirk | |
+| T-C5.11 | **the tilt switch on PB9 as a second panic trigger** (**PREDICTED**) | |
 | T-C6.1 to T-C6.3 | **RAM search** after a login, after the panic button, after failed logins | |
 | T-C6.4 to T-C6.6 | damage while running (G11), the old partition (G10), damage at start | |
 | T-C6.7 | no plaintext and no key text in flash | |
