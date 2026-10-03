@@ -20,6 +20,7 @@ STM32 HAL — per the course constraint, and the code is split into
 | `CHANGE_MK_MODE` | Implemented: re-encrypts the table with a fresh salt and writes header + table to the *other* partition in one verified commit |
 | `GENERATE_MODE` | **Implemented.** User picks an id, service name, character classes and length; the password is built from debiased ADC noise and saved through `Session_Save()`. Tested on the board with the Stage-B hardcoded key; **not yet re-tested behind the login** |
 | Panic button (PA10, EXTI) | **Working** — from the ISR: wipes the session key, the decrypted table, every buffer that held a key or a formatted password, the generated password and the entropy pool, and the UART receive buffer, then returns to the login screen. Highest interrupt priority in the system |
+| Tilt switch (PB9, EXTI) | **Implemented, not yet run on the board.** A second panic trigger. A tilt switch (KY-020) on the SDA pin of the shield's AHT10 socket calls the same panic callback on any edge. Interrupt priority 1, with its own 500 ms guard |
 | ADC | **DMA-driven, no polling.** ADC1 on PA0 (NTC) and PA1 (LDR), sampled in 512-sample single-channel blocks by DMA2 Stream0 with a transfer-complete interrupt |
 | Crypto | SHA-256, HMAC-SHA256, PBKDF2 key stretching and a SHA-256-keystream XOR cipher for the table. Verified against RFC/NIST vectors on a PC. The cipher is still the lightweight placeholder — "swap for AES if time remains" |
 
@@ -48,6 +49,10 @@ Src/  drivers/   (implementations, mirrors Inc/drivers/)
     layer wires this to wipe RAM and reset state) — a software debounce
     guard only stops one physical press from re-triggering the callback
     multiple times, it never delays the wipe itself.
+    The same driver also handles a tilt switch on PB9 (EXTI line 9, both
+    edges, NVIC priority 1). It calls the same callback. It has its own
+    500 ms guard, because the ball inside the switch bounces and one tilt
+    makes many edges.
   - `usart_drv` — USART2 (PA2=TX, PA3=RX), 115200 8N1, **fully
     interrupt/DMA-driven, no register polling**: TX uses DMA1 Stream6, RX
     uses DMA1 Stream5 into a line buffer, and a line boundary is detected
@@ -216,6 +221,24 @@ prompt. Choosing an id that is in use asks `Overwrite? (y/n)` first.
 Pressing the PA10 button at any point destroys the session and every secret
 in RAM — including the generated password and the entropy pool — and returns
 to the login screen (`FIRST_MEET` if the device has no data).
+
+Tilting the board does the same thing. The tilt switch is a KY-020 module
+from the 37-in-1 sensor kit. It is wired to the AHT10 socket on the Training
+Shield, which is an I2C socket. The project does not use I2C, so the socket
+pins are free. The wires go like this.
+
+| Sensor pin | Socket pin |
+|---|---|
+| `-` | GND |
+| middle pin | VCC (measure it first, it must be 3.3V and not 5V) |
+| `S` | SDA, which is PB9 |
+
+PB9 must stay an input. Do not plug an AHT10 or a BH1750 module into the
+sockets at the same time, because that chip would drive the same pin. The
+switch makes an edge when the ball rolls, so any change of position counts as
+movement. The tilt trigger is a convenience. A shock or tilt switch cannot
+tell a real attack from a bump on the desk, so keep using the PA10 button as
+the main panic control.
 
 The entropy sensors are an NTC thermistor divider on PA0 and an LDR divider
 on PA1.
