@@ -3,13 +3,64 @@
 #include "partition_store.h"
 #include "flash_drv.h"
 #include "crc_drv.h"
-#include "xor_cipher.h"
+#include "aes_ctr.h"
+#include "hmac_sha256.h"
+#include "kdf.h"
 #include "secure_zero.h"
 
 #define CRC_CHUNK_LEN 128U
 
+typedef struct {
+    uint8_t aes[AES128_KEY_LEN];
+    hmac_sha256_ctx_t mac;
+} part_keys_t;
+
 static partition_info_t s_active;
 static bool s_have_active = false;
+
+static void DeriveKeys(const uint8_t enc_key[PARTITION_KEY_LEN], part_keys_t *keys)
+{
+    static const uint8_t aes_label[] = "RUNEIT-aes-v1";
+    static const uint8_t mac_label[] = "RUNEIT-mac-v1";
+    uint8_t d[HMAC_SHA256_LEN];
+
+    HmacSha256(enc_key, PARTITION_KEY_LEN, aes_label, sizeof(aes_label) - 1U, d);
+    (void)memcpy(keys->aes, d, AES128_KEY_LEN);
+    HmacSha256(enc_key, PARTITION_KEY_LEN, mac_label, sizeof(mac_label) - 1U, d);
+    HmacSha256_Init(&keys->mac, d, sizeof(d));
+    Secure_Zero(d, sizeof(d));
+}
+
+/* HMAC over prefix || head || body, streamed because the three parts live in
+ * different buffers. */
+static void MacParts(const hmac_sha256_ctx_t *mac,
+                     const uint8_t *prefix, size_t prefix_len,
+                     const uint8_t *head, size_t head_len,
+                     const uint8_t *body, size_t body_len,
+                     uint8_t out[HMAC_SHA256_LEN])
+{
+    sha256_ctx_t inner = mac->inner;
+    sha256_ctx_t outer = mac->outer;
+    uint8_t digest[HMAC_SHA256_LEN];
+
+    SHA256_Update(&inner, prefix, prefix_len);
+    SHA256_Update(&inner, head, head_len);
+    SHA256_Update(&inner, body, body_len);
+    SHA256_Final(&inner, digest);
+    SHA256_Update(&outer, digest, sizeof(digest));
+    SHA256_Final(&outer, out);
+
+    Secure_Zero(digest, sizeof(digest));
+    Secure_Zero(&inner, sizeof(inner));
+    Secure_Zero(&outer, sizeof(outer));
+}
+
+static void ComputeTag(const part_keys_t *keys, const partition_header_t *header,
+                       const uint8_t *cipher, uint8_t out[HMAC_SHA256_LEN])
+{
+    MacParts(&keys->mac, NULL, 0U, (const uint8_t *)header,
+             offsetof(partition_header_t, tag), cipher, sizeof(pwd_table_t), out);
+}
 
 static uint32_t Partition_HeaderCrcLen(void)
 {
@@ -70,17 +121,32 @@ const partition_info_t *Partition_Store_Active(void)
 
 bool Partition_Store_Load(const uint8_t enc_key[PARTITION_KEY_LEN], pwd_table_t *out_table)
 {
+    part_keys_t keys;
+    uint8_t tag[HMAC_SHA256_LEN];
+    bool ok;
+
     if (!s_have_active) {
         return false;
     }
 
+    DeriveKeys(enc_key, &keys);
     Flash_Drv_Read(s_active.addr + (uint32_t)sizeof(partition_header_t),
                    (uint8_t *)out_table, sizeof(*out_table));
-    XorCipher_Apply((uint8_t *)out_table, sizeof(*out_table),
-                    enc_key, PARTITION_KEY_LEN, s_active.header.version);
-    return true;
+    ComputeTag(&keys, &s_active.header, (const uint8_t *)out_table, tag);
+
+    ok = Kdf_ConstTimeEqual(tag, s_active.header.tag, sizeof(tag));
+    if (ok) {
+        AesCtr_Apply((uint8_t *)out_table, sizeof(*out_table), keys.aes, s_active.header.iv);
+    } else {
+        Secure_Zero(out_table, sizeof(*out_table));
+    }
+
+    Secure_Zero(&keys, sizeof(keys));
+    Secure_Zero(tag, sizeof(tag));
+    return ok;
 }
 
+static const uint8_t s_iv_label[] = "RUNEIT-iv-v1";
 static uint8_t s_commit_scratch[sizeof(pwd_table_t)];
 
 bool Partition_Store_Commit(const uint8_t enc_key[PARTITION_KEY_LEN],
@@ -94,6 +160,8 @@ bool Partition_Store_Commit(const uint8_t enc_key[PARTITION_KEY_LEN],
     uint32_t new_version = 1U;
     partition_header_t header;
     partition_info_t written;
+    part_keys_t keys;
+    uint8_t digest[HMAC_SHA256_LEN];
     bool ok;
 
     if (s_have_active) {
@@ -103,15 +171,27 @@ bool Partition_Store_Commit(const uint8_t enc_key[PARTITION_KEY_LEN],
         new_version   = s_active.header.version + 1U;
     }
 
+    DeriveKeys(enc_key, &keys);
     (void)memcpy(s_commit_scratch, table, sizeof(s_commit_scratch));
-    XorCipher_Apply(s_commit_scratch, sizeof(s_commit_scratch),
-                    enc_key, PARTITION_KEY_LEN, new_version);
 
+    (void)memset(&header, 0, sizeof(header));
     header.magic = PARTITION_MAGIC;
     header.version = new_version;
     header.kdf_iter = kdf_iter;
     (void)memcpy(header.salt, salt, sizeof(header.salt));
     (void)memcpy(header.auth, auth, sizeof(header.auth));
+
+    /* Synthetic IV: a MAC of the header fields and the plaintext. It is unique
+     * for every distinct (version, table) pair without needing a random
+     * source, and a retried commit of identical data reuses an identical
+     * keystream, which reveals nothing new. */
+    MacParts(&keys.mac, s_iv_label, sizeof(s_iv_label) - 1U,
+             (const uint8_t *)&header, offsetof(partition_header_t, iv),
+             s_commit_scratch, sizeof(s_commit_scratch), digest);
+    (void)memcpy(header.iv, digest, sizeof(header.iv));
+
+    AesCtr_Apply(s_commit_scratch, sizeof(s_commit_scratch), keys.aes, header.iv);
+    ComputeTag(&keys, &header, s_commit_scratch, header.tag);
 
     CRC_Drv_Reset();
     CRC_Drv_Feed((const uint8_t *)&header, Partition_HeaderCrcLen());
@@ -123,6 +203,8 @@ bool Partition_Store_Commit(const uint8_t enc_key[PARTITION_KEY_LEN],
     Flash_Drv_Write(target_addr + (uint32_t)sizeof(header), s_commit_scratch, sizeof(s_commit_scratch));
 
     Secure_Zero(s_commit_scratch, sizeof(s_commit_scratch));
+    Secure_Zero(&keys, sizeof(keys));
+    Secure_Zero(digest, sizeof(digest));
 
     /* Trust flash, not the write calls: only switch to the new partition if
      * what is really stored validates and carries the version we wrote. */
