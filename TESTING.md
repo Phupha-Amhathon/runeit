@@ -1086,7 +1086,9 @@ Your four main questions are answered in these places.
    `set {unsigned int}0x40013C10 = 0x400` and then `continue`. We use this to
    press the button at an exact moment, for example when a breakpoint is
    reached. The processor can run a few more instructions before it reacts. Two
-   presses within 200 ms count as one press.
+   presses within 200 ms count as one press. The tilt switch on PB9 has its own
+   flag. It is bit 9 of the same register, so the command is
+   `set {unsigned int}0x40013C10 = 0x200`. Two triggers within 500 ms count as one.
 6. **A reset does not clear RAM.** Old keys can stay in the stack area after a
    reset. Before you search RAM for secrets, clear the unused RAM as shown in
    C0.3, or switch the board off and on.
@@ -5248,6 +5250,192 @@ This does no harm, because no secret is printed. But it looks confusing.
   formatted. The bytes may be sent, but the line buffer must still be all zeros
   afterwards. Run test T-C6.2.
 
+## T-C5.11 The tilt switch is a second panic button
+
+### What this test checks
+
+The firmware has a second panic trigger. A tilt switch is wired to PB9, which is
+the SDA pin of the shield's AHT10 socket. Any change of the pin closes the session
+in the same way as the PA10 button. This test checks the pin, the interrupt setup,
+the guard time and the behaviour. **PREDICTED.** I read the code and I expect this
+result, but I did not run it on the board.
+
+### Before you start
+
+* The tilt switch is wired as in the README. The middle pin is on VCC (3.3V), the
+  `-` pin is on GND and the `S` pin is on SDA.
+* No AHT10 or BH1750 module is plugged into the shield sockets.
+* You are logged in and the menu is shown.
+
+### Steps
+
+**Step 1. Check that the SDA pin is really PB9.**
+
+```
+interrupt
+set {unsigned int}0x40023830 |= 2
+print/x ({unsigned int}0x40020410 >> 9) & 1
+```
+
+The first line halts the board. The second line switches on the clock of port B
+(it is already on after boot, so this changes nothing). The third line reads the
+level of PB9. Run the third line again with the switch in the other position. For
+example turn the board upside down and hold it still.
+
+The answer must change between `0x0` and `0x1`. The numbers are examples.
+
+```
+$1 = 0x1
+$2 = 0x0
+```
+
+**Step 2. Check the setup of the pin and the interrupt.**
+
+```
+print/x ({unsigned int}0x40020400 >> 18) & 3
+print/x ({unsigned int}0x4002040C >> 18) & 3
+print/x ({unsigned int}0x40013810 >> 4) & 0xF
+print/x ({unsigned int}0x40013810 >> 8) & 0xF
+print/x {unsigned int}0x40013C00 & 0x200
+print/x {unsigned int}0x40013C08 & 0x200
+print/x {unsigned int}0x40013C0C & 0x200
+print/x {unsigned int}0xE000E100 & 0x800000
+print/x {unsigned char}0xE000E417
+```
+
+The lines read these values in order. The mode of PB9, its pull setting, the port
+chosen for line 9, the port chosen for line 10, the mask bit of line 9, the rising
+edge bit, the falling edge bit, the NVIC enable bit and the priority byte.
+
+The answers must be the following.
+
+```
+$1 = 0x0
+$2 = 0x1
+$3 = 0x1
+$4 = 0x0
+$5 = 0x200
+$6 = 0x200
+$7 = 0x200
+$8 = 0x800000
+$9 = 0x10
+```
+
+Answer `$3` is `0x1` for port B. Answer `$4` is `0x0` for port A, so the button on
+PA10 is still mapped. Answer `$9` is `0x10` because the board uses the upper four
+bits for the priority, so priority 1 is shown as `0x10`.
+
+**Step 3. Press the tilt trigger from gdb.**
+
+```
+print 'session.c'::s_generation
+set {unsigned int}0x40013C10 = 0x200
+continue
+```
+
+The first line prints the panic counter. The second line sets the flag of line 9,
+as if the switch had made an edge. The third line lets the processor run. The
+terminal must show the login screen.
+
+```
+== LOCKED ==
+Master key:
+```
+
+Halt the board again and look at the counter.
+
+```
+interrupt
+print 'session.c'::s_generation
+continue
+```
+
+The counter must be one higher than before.
+
+**Step 4. Tilt the real board.**
+
+Log in again and wait for the menu. Then tilt the board so that the ball rolls.
+The terminal must show the login screen. Do it again from the login screen. Nothing
+bad must happen, because the wipe can run twice.
+
+**Step 5. The guard time.**
+
+Log in, then halt the board and note the panic counter.
+
+```
+interrupt
+print 'session.c'::s_generation
+continue
+```
+
+Shake the switch for about one second. Then read the counter again.
+
+```
+interrupt
+print 'session.c'::s_generation
+continue
+```
+
+The counter must go up by one or two, and not by ten or more. One shake makes many
+edges, but the guard of 500 ms accepts at most one trigger in every 500 ms.
+
+**Step 6. The PA10 button still works.**
+
+Log in and press the real button on PA10. The terminal must show the login screen.
+Check that the counter goes up by one in the same way as in step 3.
+
+**Step 7. The first trigger after a reset is not lost.**
+
+Tilting the board within half a second after a reset is hard to do by hand. Use
+gdb instead. The first line below stops the board when `App_Run` starts, which is
+after the tilt interrupt was set up.
+
+```
+delete
+break App_Run
+monitor reset
+continue
+```
+
+The lines reset the board and stop it again at the start of `App_Run`. The reset
+happens less than a second ago, so the 500 ms guard would block a trigger if the
+firmware did not have the `s_tilt_seen` flag. Now set the flag of line 9 and let the
+processor run.
+
+```
+delete
+print 'session.c'::s_generation
+set {unsigned int}0x40013C10 = 0x200
+continue
+```
+
+The second line prints the panic counter, which is `0` after a reset. The handler
+must still call the panic callback. Halt the board with `interrupt`, print the
+counter again, and it must be `1`.
+
+### Result
+
+The test **passes** when the pin level changes with the switch, all the values in
+step 2 are right, every trigger returns to the login screen with the counter one
+higher, and a shake makes at most one trigger in every 500 ms.
+
+### If the result is different
+
+* **The level in step 1 never changes.** The wires are on the wrong pin, or the
+  shield uses another pin for SDA. Try the SCL pin, which should be PB8. In that
+  case change `9` to `8` in the commands and in `exti_drv.c`, and tell me, because
+  the code needs the matching change.
+* **The level in step 1 is always `0x1`.** The switch has no connection to GND.
+  Check the `-` wire and the position of the ball.
+* **Step 2 shows a wrong value.** `EXTI_Drv_TiltInit` was not called, so look at
+  `main.c`. If only answer `$4` is wrong, the setup of line 9 cleared the field of
+  line 10. That would be a bug in the way `EXTICR[2]` is written.
+* **The gdb trigger does nothing.** Check the answers `$5` and `$8` of step 2.
+* **One shake gives many triggers.** The guard time is too short for your switch.
+  Raise `TILT_GUARD_MS` in `exti_drv.c`.
+* **The board resets or hangs after a tilt.** A module may be plugged into the
+  AHT10 or BH1750 socket and fight with the sensor on PB9. Remove it.
+
 ---
 
 # C6 — Damage and wipe
@@ -5808,6 +5996,7 @@ failure add the id of the known problem and the date.
 | T-C5.5 and T-C5.6 | **panic at every step of a write. The written partition and the active partition** | |
 | T-C5.7 | **power loss at every step of a write** | |
 | T-C5.8 to T-C5.10 | the real button, many panics, the listing quirk | |
+| T-C5.11 | **the tilt switch on PB9 as a second panic trigger** (**PREDICTED**) | |
 | T-C6.1 to T-C6.3 | **RAM search** after a login, after the panic button, after failed logins | |
 | T-C6.4 to T-C6.6 | damage while running (G11), the old partition (G10), damage at start | |
 | T-C6.7 | no plaintext and no key text in flash | |
