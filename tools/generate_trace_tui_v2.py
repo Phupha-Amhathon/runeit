@@ -82,7 +82,7 @@ def fresh_state():
         "id": None, "name": None, "classes": None, "length": None,
         "channel": None, "samples": None, "bias_pct": None, "yield_pairs": None,
         "sample_loc": None,
-        "byte_value": None, "threshold": None, "accepted": None, "mapped_char": None,
+        "byte_value": None, "draw_bits": None, "threshold": None, "accepted": None, "mapped_char": None,
         "chars_done": 0, "pwd_so_far": b"",
         "write_phase": None,      # None / "pending" / "done"
         "save_id": None, "save_name": None, "save_pwd": None,
@@ -181,11 +181,12 @@ def panel_mapping(state):
     t.add_column(style=DIM)
     t.add_column()
     if state["byte_value"] is None:
-        for label in ("debiased byte", "reject if ≥", "verdict", "maps to"):
+        for label in ("debiased draw", "reject if ≥", "verdict", "maps to"):
             t.add_row(label, Text("—", style=DIM))
     else:
-        t.add_row("debiased byte", f"{state['byte_value']}  (0x{state['byte_value']:02x})")
-        t.add_row("reject if ≥", f"{state['threshold']} (out of 256)")
+        t.add_row("debiased draw", f"{state['byte_value']}  (0x{state['byte_value']:02x}, "
+                                   f"{state['draw_bits']} bits)")
+        t.add_row("reject if ≥", f"{state['threshold']} (out of {1 << state['draw_bits']})")
         if state["accepted"]:
             t.add_row("verdict", Text("ACCEPTED", style="bold green"))
             t.add_row("maps to", Text(f"-> {state['mapped_char']!r} (not yet written)", style="bold white"))
@@ -354,11 +355,21 @@ def handle_light(session, state, auto_mode):
     handle_absorb(session, state, auto_mode, "light", "mode_generate.c:349")
 
 
+def read_draw_bits(session):
+    """Bits per draw for the chosen charset. Firmware older than the
+    dynamic-draw change has no s_draw_bits and always drew a full byte."""
+    try:
+        return int(session.read_value("(unsigned)s_draw_bits"))
+    except RuntimeError:
+        return 8
+
+
 def handle_mapping(session, state, auto_mode):
     if not state["seen_input"]:
         read_input(session, state)
     value = int(session.read_value("(unsigned)value"))
     threshold = int(session.read_value("s_reject_threshold"))
+    state["draw_bits"] = read_draw_bits(session)
     accepted = value < threshold
     charset_len = int(session.read_value("s_charset_len"))
     mapped_char = None
