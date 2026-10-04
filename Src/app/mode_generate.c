@@ -24,7 +24,7 @@
 #define GEN_LINE_LEN          32U
 #define GEN_MSG_LEN           128U
 #define GEN_CHARSET_MAX_LEN   94U /* lower 26 + upper 26 + digit 10 + symbol 32 */
-
+#define GEN_FIRST_CHANNEL     1U  /* light first: an odd draw then spares the skewed temp channel */
 static const char s_chars_lower[]  = "abcdefghijklmnopqrstuvwxyz";
 static const char s_chars_upper[]  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const char s_chars_digit[]  = "0123456789";
@@ -58,7 +58,7 @@ static char s_charset[GEN_CHARSET_MAX_LEN + 1U];
 static uint16_t s_charset_len = 0U;
 static uint16_t s_reject_threshold = 0U;
 static uint32_t s_length = 0U;
-
+static uint8_t s_draw_bits = ENTROPY_MAX_DRAW_BITS;
 static char s_pwd[PWD_SECRET_LEN];
 static uint32_t s_chars_done = 0U;
 static uint32_t s_rounds = 0U;
@@ -172,9 +172,9 @@ static bool BuildCharset(const char *letters)
     }
 
     if (s_charset_len > 0U) {
-        /* Largest multiple of the charset size that fits in one byte; bytes
-         * at or above it are discarded so every character is equally likely. */
-        s_reject_threshold = (uint16_t)((256U / s_charset_len) * s_charset_len);
+        /* Draws below the threshold map to s_charset[draw % len], each character
+         * equally likely; the bit count is the cheapest in debiased bits per char. */
+        s_draw_bits = Entropy_Pool_DrawBits(s_charset_len, &s_reject_threshold);
     }
     return s_charset_len > 0U;
 }
@@ -182,8 +182,8 @@ static bool BuildCharset(const char *letters)
 static void ProduceChars(void)
 {
     uint8_t value;
-
-    while ((s_chars_done < s_length) && Entropy_Pool_TakeByte(&s_pool, &value)) {
+    while ((s_chars_done < s_length) &&
+           Entropy_Pool_TakeBits(&s_pool, s_draw_bits, GEN_FIRST_CHANNEL, &value)) {
         if ((uint16_t)value < s_reject_threshold) {
             s_pwd[s_chars_done] = s_charset[value % s_charset_len];
             s_chars_done++;

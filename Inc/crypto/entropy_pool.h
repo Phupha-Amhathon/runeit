@@ -50,11 +50,37 @@ void Entropy_Pool_Init(entropy_pool_t *pool);
 bool Entropy_Pool_Absorb(entropy_pool_t *pool, uint8_t channel,
                           const uint16_t *samples, uint16_t count);
 
+/** Most bits one draw can take; a draw is returned in a uint8_t. */
+#define ENTROPY_MAX_DRAW_BITS   8U
+
 /**
  * Packs 8 debiased bits into *out, alternating channel 0 and channel 1 per
  * bit. Returns false without consuming anything if either channel has fewer
  * than 4 bits available.
  */
 bool Entropy_Pool_TakeByte(entropy_pool_t *pool, uint8_t *out);
+
+/**
+ * Packs nbits (1..ENTROPY_MAX_DRAW_BITS) debiased bits into *out, most
+ * significant first, alternating channels per bit and starting with
+ * first_channel (0 or 1). For an odd nbits the first channel supplies one
+ * bit more than the other. Returns false without consuming anything if
+ * either channel is short, or if an argument is out of range.
+ */
+bool Entropy_Pool_TakeBits(entropy_pool_t *pool, uint8_t nbits, uint8_t first_channel,
+                           uint8_t *out);
+
+/**
+ * Chooses how many bits to draw per attempt when mapping draws onto
+ * `range` equally likely outcomes (1..256) by rejection sampling, and sets
+ * *accept_below to the largest multiple of range that fits in that many
+ * bits: a draw below it is used as (draw % range), a draw at or above it is
+ * discarded. Every outcome stays exactly 1/range likely for any bit count;
+ * this picks the count that spends the fewest debiased bits per accepted
+ * draw on average (bits * 2^bits / accept_below), preferring fewer bits on
+ * a tie. Returns ENTROPY_MAX_DRAW_BITS with *accept_below = 0 if range is
+ * out of bounds.
+ */
+uint8_t Entropy_Pool_DrawBits(uint16_t range, uint16_t *accept_below);
 
 #endif /* ENTROPY_POOL_H */
