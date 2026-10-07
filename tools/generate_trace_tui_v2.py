@@ -44,16 +44,22 @@ Requires: pip install pexpect rich
 """
 import os
 import re
-import struct
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, PARTITION_A_ADDR, PARTITION_B_ADDR, PARTITION_HEADER_LEN,
-    PARTITION_MAGIC, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, build_arg_parser, die, hexstr, locate_gdb, pace,
 )
+
+PARTITION_STORE_H = Path(__file__).resolve().parent.parent / "Inc" / "app" / "partition_store.h"
+
+# Partition layout, taken from the firmware rather than copied here: the
+# header size from the ELF, magic and A/B addresses from partition_store.h.
+# Filled in by load_partition_layout() once gdb is connected.
+LAYOUT = {"header_len": None, "magic": None, "a_addr": None, "b_addr": None}
+ERASED_WORD = 0xFFFFFFFF
 
 try:
     from rich.console import Console, Group
@@ -94,10 +100,37 @@ def fresh_state():
     }
 
 
-def parse_header(raw_bytes):
-    magic, version, _kdf_iter, _salt, _auth, _crc32 = struct.unpack(
-        "<3I16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
+def read_header_define(name):
+    """Integer value of a #define in Inc/app/partition_store.h."""
+    text = PARTITION_STORE_H.read_text()
+    m = re.search(r"^\s*#define\s+" + name + r"\s+(0[xX][0-9A-Fa-f]+|\d+)", text, re.M)
+    if not m:
+        die(f"could not find #define {name} in {PARTITION_STORE_H}")
+    return int(m.group(1), 0)
+
+
+def load_partition_layout(session):
+    """Header size comes from the ELF being debugged, so it always matches
+    the flashed firmware (64 bytes before the AES change, 112 after)."""
+    LAYOUT["header_len"] = int(session.read_value("sizeof(partition_header_t)"))
+    LAYOUT["magic"] = read_header_define("PARTITION_MAGIC")
+    LAYOUT["a_addr"] = read_header_define("PARTITION_A_ADDR")
+    LAYOUT["b_addr"] = read_header_define("PARTITION_B_ADDR")
+
+
+def read_partition_header(session, addr):
+    """Reads magic and version through the firmware's own struct type, so a
+    change in the header layout cannot shift these fields."""
+    hdr = f"((partition_header_t *){addr:#x})"
+    magic = session.read_int(f"{hdr}->magic")
+    version = session.read_int(f"{hdr}->version")
+    if magic == LAYOUT["magic"]:
+        status = "valid"
+    elif magic == ERASED_WORD:
+        status = "empty"
+    else:
+        status = "INVALID"
+    return {"status": status, "version": version}
 
 
 def read_input(session, state):
@@ -123,8 +156,8 @@ def read_persistent(session, state):
     state["active_addr"] = session.read_int("'partition_store.c'::s_active.addr")
     state["active_sector"] = session.read_value("'partition_store.c'::s_active.sector")
 
-    state["flash_a"] = parse_header(session.read_bytes(hex(PARTITION_A_ADDR), PARTITION_HEADER_LEN))
-    state["flash_b"] = parse_header(session.read_bytes(hex(PARTITION_B_ADDR), PARTITION_HEADER_LEN))
+    state["flash_a"] = read_partition_header(session, LAYOUT["a_addr"])
+    state["flash_b"] = read_partition_header(session, LAYOUT["b_addr"])
 
     chars_done = int(session.read_value("s_chars_done"))
     state["chars_done"] = chars_done
@@ -132,7 +165,7 @@ def read_persistent(session, state):
 
     entries_len = ENTRY_COUNT_SHOWN * PWD_ENTRY_SIZE
     state["entries"] = bytes(session.read_bytes(
-        hex(state["active_addr"] + PARTITION_HEADER_LEN), entries_len))
+        hex(state["active_addr"] + LAYOUT["header_len"]), entries_len))
 
 
 def border_for(state, name, color):
@@ -263,8 +296,12 @@ def panel_flash(state):
         t.add_row("active", Text("—", style=DIM))
     else:
         t.add_row("active", f"sector {state['active_sector']} @ 0x{state['active_addr']:08x}")
-        t.add_row("A (0x08008000)", f"{'valid' if a['valid'] else 'INVALID'} · version {a['version']}")
-        t.add_row("B (0x0800c000)", f"{'valid' if b['valid'] else 'INVALID'} · version {b['version']}")
+        for name, addr, hdr in (("A", LAYOUT["a_addr"], a), ("B", LAYOUT["b_addr"], b)):
+            if hdr["status"] == "empty":
+                shown = Text("empty (erased)", style=DIM)
+            else:
+                shown = f"{hdr['status']} · version {hdr['version']}"
+            t.add_row(f"{name} (0x{addr:08x})", shown)
     caption = None
     if phase == "pending":
         caption = "commit about to write the INACTIVE partition - the active one is still untouched"
@@ -283,7 +320,7 @@ def panel_entries(state):
     if state["entries"] is None:
         t.add_row("—", "—", Text("—", style=DIM))
     else:
-        base = state["active_addr"] + PARTITION_HEADER_LEN
+        base = state["active_addr"] + LAYOUT["header_len"]
         for i in range(ENTRY_COUNT_SHOWN):
             chunk = state["entries"][i * PWD_ENTRY_SIZE:(i + 1) * PWD_ENTRY_SIZE]
             addr = base + i * PWD_ENTRY_SIZE
@@ -298,7 +335,8 @@ def panel_entries(state):
                     style = "bold green"
             t.add_row(label, f"0x{addr:08x}", hexstr(chunk), style=style)
     return Panel(t, title="[b]Password table on flash[/b]", title_align="left",
-                 subtitle="active partition + 64, every entry is 48 bytes, all ciphertext",
+                 subtitle=f"active partition + {LAYOUT['header_len']} (header), "
+                          f"every entry is 48 bytes, all ciphertext",
                  subtitle_align="left", border_style="grey37")
 
 
@@ -416,7 +454,7 @@ def handle_save(session, state, auto_mode):
     # back from flash rather than assuming the toggle happened.
     state["write_phase"] = "done"
     read_persistent(session, state)
-    addr = state["active_addr"] + PARTITION_HEADER_LEN + entry_id * PWD_ENTRY_SIZE
+    addr = state["active_addr"] + LAYOUT["header_len"] + entry_id * PWD_ENTRY_SIZE
     state["save_addr"] = addr
     state["save_cipher"] = session.read_bytes(hex(addr), PWD_ENTRY_SIZE)
     render(state)
@@ -440,6 +478,9 @@ def main():
     try:
         session.connect(args.host, args.port)
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
+        load_partition_layout(session)
+        print(f"Partition header: {LAYOUT['header_len']} bytes, magic 0x{LAYOUT['magic']:08x} "
+              f"(from the ELF and Inc/app/partition_store.h).")
 
         bp_temp = session.set_checked_breakpoint_by_line("mode_generate.c", 333)
         bp_light = session.set_checked_breakpoint_by_line("mode_generate.c", 349)
