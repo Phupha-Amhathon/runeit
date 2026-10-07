@@ -1,0 +1,332 @@
+# RUNEIT — Pocket Password
+
+A bare-metal password manager for the STM32F411RE (NUCLEO-F411RE): a master
+key (MK) authorizes access to an encrypted table of service/password
+entries, stored redundantly across two flash partitions so updates can be
+applied transactionally. Full design background is in
+[`information/RUNEIT_V1.pdf`](information/RUNEIT_V1.pdf); the class
+requirements are in [`information/image.png`](information/image.png).
+
+This is a class project (1-month timebox). Register-level CMSIS only — no
+STM32 HAL — per the course constraint, and the code is split into
+`Application` and `Driver` layers as a graded requirement.
+
+## Status
+
+| Area | State |
+|---|---|
+| `INIT` → `FIRST_MEET` / `MK_AUTH` → `MODE_SELECTION` | **Implemented (Stage C).** A blank device asks for a master key twice; every later boot asks for it before anything else. Hardcoded key removed |
+| `RETRIEVE_MODE` | Working; needs the open session, strict id parsing |
+| `CHANGE_MK_MODE` | Implemented: re-encrypts the table with a fresh salt and writes header + table to the *other* partition in one verified commit |
+| `GENERATE_MODE` | **Implemented.** User picks an id, service name, character classes and length; the password is built from debiased ADC noise and saved through `Session_Save()`. Tested on the board with the Stage-B hardcoded key; **not yet re-tested behind the login** |
+| Panic button (PA10, EXTI) | **Working** — from the ISR: wipes the session key, the decrypted table, every buffer that held a key or a formatted password, the generated password and the entropy pool, and the UART receive buffer, then returns to the login screen. Highest interrupt priority in the system |
+| Tilt switch (PB9, EXTI) | **Implemented, not yet run on the board.** A second panic trigger. A tilt switch (KY-020) on the SDA pin of the shield's AHT10 socket calls the same panic callback on any edge. Interrupt priority 1, with its own 500 ms guard |
+| ADC | **DMA-driven, no polling.** ADC1 on PA0 (NTC) and PA1 (LDR), sampled in 512-sample single-channel blocks by DMA2 Stream0 with a transfer-complete interrupt |
+| Crypto | SHA-256, HMAC-SHA256, PBKDF2 key stretching and and AES-128-CTR with an HMAC-SHA256 tag for the table (encrypt-then-MAC). Verified against RFC and NIST vectors on a PC. The tag and cipher had a first quick test on the board and worked. The full test steps have not been rewritten yet |
+
+Stage B (data path) was tested on the board; Stage C is verified by the PC
+suite in `tests/host/` and has **not yet been run on the board** — see
+[`TESTING.md`](TESTING.md) (written for Stage B, see the note at its top).
+
+## Architecture
+
+```
+Inc/  drivers/   usart_drv.h  flash_drv.h  crc_drv.h  exti_drv.h  systick_drv.h  adc_drv.h  uid_drv.h  critical_drv.h
+      crypto/    sha256.h  hmac_sha256.h  kdf.h  aes128.h  aes_ctr.h  secure_zero.h
+      app/       app.h  app_types.h  session.h  partition_store.h  password_table.h
+                 mode_first_meet.h  mode_mk_auth.h  mode_retrieve.h  mode_change_mk.h
+Src/  drivers/   (implementations, mirrors Inc/drivers/)
+      crypto/    (implementations, mirrors Inc/crypto/)
+      app/       (implementations, mirrors Inc/app/)
+      main.c     syscalls.c  sysmem.c
+```
+
+- **`drivers/`** — register-level CMSIS wrappers only, no business logic:
+  - `systick_drv` — 1 ms tick used for delays and button debounce.
+  - `exti_drv` — PA10 "panic" button. Falling-edge EXTI at the **highest
+    NVIC priority** in the system, so it always preempts USART/DMA
+    activity. The ISR calls a registered callback immediately (the app
+    layer wires this to wipe RAM and reset state) — a software debounce
+    guard only stops one physical press from re-triggering the callback
+    multiple times, it never delays the wipe itself.
+    The same driver also handles a tilt switch on PB9 (EXTI line 9, both
+    edges, NVIC priority 1). It calls the same callback. It has its own
+    500 ms guard, because the ball inside the switch bounces and one tilt
+    makes many edges.
+  - `usart_drv` — USART2 (PA2=TX, PA3=RX), 115200 8N1, **fully
+    interrupt/DMA-driven, no register polling**: TX uses DMA1 Stream6, RX
+    uses DMA1 Stream5 into a line buffer, and a line boundary is detected
+    by the USART **IDLE-line interrupt** rather than a software timeout
+    timer (matching the course's "UART, no timer" material). Callers get a
+    simple line-based API (`USART_Drv_Send`, `USART_Drv_TakeLine`, ready
+    flags) without touching any register directly.
+  - `flash_drv` — unlock/erase-sector/write/read primitives, parameterized
+    by sector and address (used for both partitions).
+  - `crc_drv` — thin wrapper over the F411's hardware CRC-32 unit
+    (fixed polynomial `0x04C11DB7`), with a streaming
+    `Reset`/`Feed`/`Result` API so a CRC can be accumulated over more than
+    one buffer (header fields + table) without re-assembling them
+    contiguously in RAM first.
+  - `adc_drv` — ADC1 channels 0 (PA0) and 1 (PA1) at a 28-cycle sample
+    time, read in blocks by DMA2 Stream0 / Channel 0 with a
+    transfer-complete interrupt at NVIC priority 3 (below the panic button
+    and the UART path). One block is single-channel, back-to-back
+    conversions, which is the timing the entropy source was characterised
+    with. API: `ADC_Drv_StartBlock` / `ADC_Drv_BlockReady`.
+  - `uid_drv` — reads the 96-bit factory unique ID (used to make the salt
+    unique per device).
+  - `critical_drv` — interrupts off/on with the previous state saved; used
+    to publish a new session atomically against the panic button.
+
+- **`crypto/`** — pure algorithms, no hardware or app-state dependency:
+  - `sha256` — self-contained SHA-256 (FIPS 180-4), verified in this
+    session against the three NIST test vectors on the host before ever
+    running on-device.
+  - `hmac_sha256`, `kdf` — HMAC-SHA256 and PBKDF2 (`Kdf_DeriveKeys`). The
+    master key is stretched into `K` (`KDF_ITERATIONS` rounds, seconds on
+    this MCU), then `auth = HMAC(K,"RUNEIT-auth-v1")` is stored and
+    `enc = HMAC(K,"RUNEIT-enc-v1")` is the cipher key and is **never
+    stored**. Because the cipher key comes out of the same slow derivation,
+    guessing through the stored hash or through the ciphertext costs the
+    same. See the note in `kdf.h` on choosing the iteration count.
+  - `secure_zero` — `Secure_Zero()`, a memset that the compiler may not
+    optimise away; used on every buffer that held a key.
+  - `aes128` and `aes_ctr` — AES-128 (encrypt direction only) and CTR
+    mode on top of it. The same call both encrypts and decrypts. CTR gives
+    no integrity by itself, so `partition_store` adds an HMAC-SHA256 tag
+    and checks it before it decrypts anything. The AES code is checked
+    against FIPS-197 and NIST SP 800-38A vectors on a PC.
+  - `rng_health` — the two continuous health tests from NIST SP 800-90B
+    4.4 (Repetition Count and Adaptive Proportion) for a raw entropy
+    source. A stuck or disconnected sensor fails them.
+  - `entropy_pool` — turns raw ADC samples into unbiased bytes. The raw ADC
+    LSB was measured as skewed as 83/17, so each channel is Von Neumann
+    debiased (two consecutive samples: 01 gives 0, 10 gives 1, 00 and 11 are
+    discarded). Eight debiased bits, alternating the two channels, make one
+    byte. Pure logic, checked on the host: the captured `adc_samples.csv`
+    (83.4% ones in the raw LSB) debiases to 49.9% ones, a synthetic 83/17
+    source to 49.8%, and a stuck source is rejected. That capture kept only
+    two bits per sample, so it says nothing about the health-test cutoffs,
+    which assume full 12-bit codes.
+
+- **`app/`** — the state machine and password-table logic; only calls into
+  `drivers/` and `crypto/`, never touches a register directly:
+  - `partition_store` — the A/B flash layout and its read/select/commit
+    logic. Each partition (sector 2 = A, sector 3 = B) starts with a
+    self-describing 112-byte header (`magic`, `version`, `kdf_iter`,
+    `salt[16]`, `auth[32]`, `iv[16]`, `tag[32]`, `crc32`) immediately followed
+    by the encrypted table. The `tag` is an HMAC-SHA256 over every header
+    field before it plus the ciphertext. The `iv` is a MAC of the header
+    fields and the plaintext, so it is different for every saved table
+    and needs no random source. The AES key and the HMAC key are both
+    derived from `enc` with fixed labels. On `INIT`, whichever
+    partition has a valid magic + CRC and the *higher* version number is
+    authoritative — there is no RAM-only "active partition" pointer to
+    lose on reset. `Partition_Store_Commit()` always writes to the
+    *inactive* sector with `version + 1`, so a power loss mid-write
+    leaves the previously-committed partition intact, and it reads back
+    and validates what it wrote before switching (returns `false`
+    otherwise). This is also what "toggle partition" means: every commit
+    (new key, saved entry) lands in the other sector.
+  - `password_table` — the in-RAM table layout (31 entries, id `0..30`)
+    and the USART text formatting for listing/showing entries.
+  - `session` — the authorized session: the derived cipher key in RAM, the
+    only place that can open it (`Session_Authenticate` for the login,
+    `Session_SetNewKey` for first setup / key change). A *generation
+    counter* is bumped by the panic button, so a derivation that was in
+    flight when the button was pressed can never publish its result
+    afterwards. Master-key rule: 8–31 printable ASCII characters.
+  - `mode_first_meet`, `mode_mk_auth`, `mode_retrieve`, `mode_change_mk` —
+    one sub-state machine per mode of the design document.
+  - `mode_generate` — the `GENERATE_MODE` sub-state machine: id, optional
+    overwrite confirmation, name, character classes (`l` `u` `d` `s`),
+    length (1-31, the most `PWD_SECRET_LEN` can hold), then non-blocking
+    sampling (temperature block, light block, repeat until enough
+    characters), then the save. Each character is one draw of k debiased
+    bits, alternating light/temp and starting with light. k (5-8) depends on
+    the charset size, from `Entropy_Pool_DrawBits()`: 7 for all four
+    classes, 6 for `lud`, 5 for one class. It is the count that spends the
+    fewest debiased bits per character on average. Draws at or above the
+    largest multiple of the charset size that fits in k bits are discarded,
+    so every character is exactly 1/N likely whatever k is. Nothing is
+    written if a health test fails or the panic button fires; the save runs
+    with interrupts masked so a press cannot empty the table between the
+    check and the copy, and it is verified by re-reading flash before
+    "Saved" is reported. The password is shown once, then every secret
+    buffer is wiped.
+  - `app` — the top-level state machine (`APP_STATE_*` in `app_types.h`).
+    Every state after the login screens is guarded: if the session is gone
+    the machine goes back to `INIT`, which chooses `FIRST_MEET` or `MK_AUTH`.
+    Also holds the panic-button callback.
+
+- **`main.c`** — initializes every driver, then calls `App_Init()` +
+  `App_Run()` (never returns).
+
+## Flash memory map
+
+| Region | Address range | Size | Contents |
+|---|---|---|---|
+| Sectors 0–1 | `0x08000000`–`0x08007FFF` | 32 KB | Firmware code. The linker script (`STM32F411RETX_FLASH.ld`) caps the `FLASH` region here on purpose — a build that grows past 32 KB **fails to link** instead of silently letting code overwrite partition data at runtime. |
+| Sector 2 (Partition A) | `0x08008000`–`0x0800BFFF` | 16 KB | `partition_header_t` + encrypted password table |
+| Sector 3 (Partition B) | `0x0800C000`–`0x0800FFFF` | 16 KB | Same layout, the other slot of the A/B pair |
+
+## Serial protocol
+
+USART2, 115200 8N1, line-based (send a line ending in Enter; the terminal's
+CR/LF is stripped by the driver). **A line ends only when an Enter arrives**
+(CR, LF or CR+LF — set your terminal's line ending to one of them; a terminal
+that sends text with no line ending will appear to hang). Typing one key at a
+time works and Backspace edits the line; the board does not echo, so turn on
+your terminal's local echo if you want to see what you type (a master key is
+then visible on screen — there is no way to hide it over a plain serial link). Each key derivation prints its duration, e.g. `(4010 ms)`.
+
+```
+== FIRST TIME SETUP ==                 (only when no partition exists)
+Choose a master key (8-31 printable characters).
+Master key: ********
+Confirm master key: ********
+Master key set (4010 ms).
+
+== LOCKED ==                           (every later boot, and after the panic button)
+Master key: ********
+Access granted (4012 ms).              (or: Wrong master key (4009 ms). -- unlimited tries,
+                                         the slow derivation is the throttle)
+== MODE SELECTION ==
+  1) Retrieve password
+  2) Generate password
+  3) Change master key
+Select: 1
+
+-- Password table --
+   0 - example.com
+Enter id to view (0-30), or 'q' to go back: 0
+example.com : hunter2
+```
+
+Generate mode, saving a 16-character password at a free id:
+
+```
+Select: 2
+
+Id to write (0-30), or 'q' to go back: 5
+
+Service name (1-15 chars, empty line cancels): github
+
+Character classes: l=lower u=upper d=digit s=symbol (e.g. luds): luds
+
+Password length (1-31): 16
+
+Saved as id 5 (github).
+Password: <16 generated characters>
+
+== MODE SELECTION ==
+```
+
+Menu choices must be exactly `1`, `2` or `3`; ids exactly one or two digits.
+An empty line cancels at any generate prompt and at the "New master key"
+prompt. Choosing an id that is in use asks `Overwrite? (y/n)` first.
+
+Pressing the PA10 button at any point destroys the session and every secret
+in RAM — including the generated password and the entropy pool — and returns
+to the login screen (`FIRST_MEET` if the device has no data).
+
+Tilting the board does the same thing. The tilt switch is a KY-020 module
+from the 37-in-1 sensor kit. It is wired to the AHT10 socket on the Training
+Shield, which is an I2C socket. The project does not use I2C, so the socket
+pins are free. The wires go like this.
+
+| Sensor pin | Socket pin |
+|---|---|
+| `-` | GND |
+| middle pin | VCC (measure it first, it must be 3.3V and not 5V) |
+| `S` | SDA, which is PB9 |
+
+PB9 must stay an input. Do not plug an AHT10 or a BH1750 module into the
+sockets at the same time, because that chip would drive the same pin. The
+switch makes an edge when the ball rolls, so any change of position counts as
+movement. The tilt trigger is a convenience. A shock or tilt switch cannot
+tell a real attack from a bump on the desk, so keep using the PA10 button as
+the main panic control.
+
+The entropy sensors are an NTC thermistor divider on PA0 and an LDR divider
+on PA1.
+
+## PC tests
+
+`tests/host/run.sh` (needs only `gcc` and `bash`) runs the crypto vectors
+and a simulation of the whole application — the real `app.c`, `session.c`,
+modes, `partition_store.c` and crypto — against software models of the flash,
+CRC and UART: first setup, wrong/right key, change key, failed flash write,
+panic during and just before publishing a session, RAM scans after the panic
+button. Run it after every change.
+
+## Building
+
+**STM32CubeIDE (GUI):** open the existing project and build as normal — the
+`Inc/{app,drivers,crypto}` and `Src/{app,drivers,crypto}` folders and their
+include paths are already registered in `.cproject`. If the IDE doesn't
+pick up files added outside it, right-click the project → *Refresh* (F5),
+then clean/rebuild.
+
+**Command line**, using the toolchain bundled with STM32CubeIDE (adjust the
+`GCC_BIN`/`CMSIS_*` paths to match your STM32CubeIDE install and Library
+workspace):
+
+```sh
+GCC_BIN=/opt/st/stm32cubeide_2.2.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*/tools/bin
+CMSIS_CORE=<workspace>/Library/CMSIS/Core/Include
+CMSIS_DEV=<workspace>/Library/CMSIS-DEVICE-F4/Include
+
+$GCC_BIN/arm-none-eabi-gcc \
+  -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard \
+  -I Inc -I Inc/app -I Inc/drivers -I Inc/crypto -I "$CMSIS_CORE" -I "$CMSIS_DEV" \
+  -Wall -Wextra -O1 -g -std=gnu11 -ffunction-sections -fdata-sections \
+  $(find Src -name "*.c") Startup/startup_stm32f411retx.s \
+  -T STM32F411RETX_FLASH.ld -Wl,--gc-sections -specs=nano.specs \
+  -o runeit.elf
+```
+
+Flash `runeit.elf` with ST-LINK (via STM32CubeIDE's debugger/programmer, or
+`st-flash`/`STM32_Programmer_CLI` if you have those installed).
+
+## Known limitations
+
+- A blank device with **no** flash data offers `FIRST_MEET` to whoever
+  reaches it first; the first person to connect chooses the key. That is
+  inherent to a device that has no key yet.
+- The salt is built from the unique device ID and a tick counter, not from a
+  random source; it only has to be unique. Replace it with the RNG when the
+  generator branch lands.
+- Stretching slows each guess but cannot save a short or common master key
+  from someone who copies the flash and guesses on a PC; use a long
+  passphrase. Raising `KDF_ITERATIONS` (or the CPU clock) raises the cost.
+- The table is protected by AES-128-CTR and an HMAC-SHA256 tag. The AES is
+  plain software code with a lookup table, so it is not hardened against
+  timing or power analysis. Anyone who can read the flash can still try to
+  guess a weak master key offline.
+- Partitions from the old XOR-cipher firmware (`RUN2`) are not recognised.
+  Erase sectors 2 and 3 and go through `FIRST_MEET` again.
+- The generated password is sent over the serial link in clear text so the
+  user can see it once; that is a deliberate choice, not encryption in
+  transit.
+- Generated passwords are at most 31 characters and names at most 15,
+  because the frozen `pwd_entry_t` layout has 32 and 16 byte fields.
+- A health-test trip aborts the save with a message and nothing is written;
+  just generate again. The cutoffs are unchanged from the polling build, on
+  which one 400-round, roughly 100000-character run reported a single fault.
+- The Von Neumann debiasing assumes consecutive samples of one channel are
+  roughly independent. That was verified with the polling build's timing, so
+  re-measure the output bias on the DMA build before trusting it.
+- Secrets can remain in the CPU stack/registers after use; only named
+  buffers are wiped (and checked in the PC tests).
+- An RX line typed while the CPU is stalled by a flash write is lost (do not
+  type during "Re-encrypting" / "Deriving").
+
+## Testing
+
+See [`TESTING.md`](TESTING.md) (Part 1 = Stage B data path, Part 2 = Stage C: login, key change, integrity, panic in every mode; the note at its top says what is current): a bottom-up, command-by-command gdb guide for
+the real board (flash, crypto, A/B partition and encryption at rest, UART/DMA,
+application screens with full mock tables, panic-button RAM wipe), with the
+expected result and the fix for every failure. `tools/mock/` holds the mock
+tables it loads, and `tools/hw_test.py` is an optional end-to-end serial smoke
+test.
