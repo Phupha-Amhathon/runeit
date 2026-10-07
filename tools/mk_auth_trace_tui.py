@@ -61,14 +61,13 @@ Requires: pip install pexpect rich
 """
 import os
 import re
-import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, PARTITION_A_ADDR, PARTITION_B_ADDR, PARTITION_HEADER_LEN,
-    PARTITION_MAGIC, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, PARTITION_A_ADDR, PARTITION_B_ADDR,
+    build_arg_parser, die, hexstr, locate_gdb, pace, read_partition_header,
 )
 
 try:
@@ -111,21 +110,14 @@ def read_persistent(session, state):
     active_addr = session.read_int("'partition_store.c'::s_active.addr")
     active_sector = session.read_value("'partition_store.c'::s_active.sector")
 
-    flash_a_raw = session.read_bytes(hex(PARTITION_A_ADDR), PARTITION_HEADER_LEN)
-    flash_b_raw = session.read_bytes(hex(PARTITION_B_ADDR), PARTITION_HEADER_LEN)
-    state["flash_a"] = parse_header(flash_a_raw)
-    state["flash_b"] = parse_header(flash_b_raw)
+    state["flash_a"] = read_partition_header(session, PARTITION_A_ADDR)
+    state["flash_b"] = read_partition_header(session, PARTITION_B_ADDR)
     state["active_sector"] = active_sector
     state["active_addr"] = active_addr
 
-    entry_base = active_addr + PARTITION_HEADER_LEN
+    entry_base = active_addr + LAYOUT["header_len"]
     state["entry0"] = session.read_bytes(hex(entry_base), PWD_ENTRY_SIZE)
     state["entry1"] = session.read_bytes(hex(entry_base + PWD_ENTRY_SIZE), PWD_ENTRY_SIZE)
-
-
-def parse_header(raw_bytes):
-    magic, version, kdf_iter, salt, auth, crc32 = struct.unpack("<3I16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
 
 
 def diff_hex(a, b):
@@ -236,9 +228,9 @@ def panel_flash(state):
     else:
         t.add_row("active", f"sector {state['active_sector']} @ 0x{state['active_addr']:08x}")
         t.add_row("A (0x08008000)",
-                   f"{'valid' if a['valid'] else 'INVALID'} · version {a['version']}")
+                   f"{a['status']} · version {a['version']}")
         t.add_row("B (0x0800c000)",
-                   f"{'valid' if b['valid'] else 'INVALID'} · version {b['version']}")
+                   f"{b['status']} · version {b['version']}")
         t.add_row("", "")
         t.add_row("entry 0 (cipher)", hexstr(state["entry0"]))
         t.add_row("entry 1 (cipher)", hexstr(state["entry1"]))
