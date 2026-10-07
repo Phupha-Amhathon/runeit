@@ -141,9 +141,14 @@ Src/  drivers/   (implementations, mirrors Inc/drivers/)
   - `mode_generate` — the `GENERATE_MODE` sub-state machine: id, optional
     overwrite confirmation, name, character classes (`l` `u` `d` `s`),
     length (1-31, the most `PWD_SECRET_LEN` can hold), then non-blocking
-    sampling (temperature block, light block, repeat until enough bytes),
-    then the save. Bytes at or above the largest multiple of the charset
-    size are discarded so every character is equally likely. Nothing is
+    sampling (temperature block, light block, repeat until enough
+    characters), then the save. Each character is one draw of k debiased
+    bits, alternating light/temp and starting with light. k (5-8) depends on
+    the charset size, from `Entropy_Pool_DrawBits()`: 7 for all four
+    classes, 6 for `lud`, 5 for one class. It is the count that spends the
+    fewest debiased bits per character on average. Draws at or above the
+    largest multiple of the charset size that fits in k bits are discarded,
+    so every character is exactly 1/N likely whatever k is. Nothing is
     written if a health test fails or the panic button fires; the save runs
     with interrupts masked so a press cannot empty the table between the
     check and the copy, and it is verified by re-reading flash before

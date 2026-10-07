@@ -1,8 +1,6 @@
 #include <string.h>
 #include "entropy_pool.h"
 
-#define BITS_PER_CHANNEL_PER_BYTE 4U
-
 static uint16_t Fifo_Available(const entropy_fifo_t *fifo)
 {
     return (uint16_t)(fifo->count - fifo->head);
@@ -64,15 +62,31 @@ bool Entropy_Pool_Absorb(entropy_pool_t *pool, uint8_t channel,
 
 bool Entropy_Pool_TakeByte(entropy_pool_t *pool, uint8_t *out)
 {
-    bool ok = (Fifo_Available(&pool->fifo[0]) >= BITS_PER_CHANNEL_PER_BYTE) &&
-              (Fifo_Available(&pool->fifo[1]) >= BITS_PER_CHANNEL_PER_BYTE);
+    return Entropy_Pool_TakeBits(pool, ENTROPY_MAX_DRAW_BITS, 0U, out);
+}
+
+bool Entropy_Pool_TakeBits(entropy_pool_t *pool, uint8_t nbits, uint8_t first_channel,
+                           uint8_t *out)
+{
+    bool ok = (nbits >= 1U) && (nbits <= ENTROPY_MAX_DRAW_BITS) &&
+              (first_channel < ENTROPY_CHANNELS);
+
+    if (ok) {
+        uint8_t second_channel = (uint8_t)(first_channel ^ 0x1U);
+        /* The first channel serves bits 0, 2, 4, ... so it owes the extra one. */
+        uint16_t need_first = (uint16_t)((nbits + 1U) / 2U);
+        uint16_t need_second = (uint16_t)(nbits / 2U);
+
+        ok = (Fifo_Available(&pool->fifo[first_channel]) >= need_first) &&
+             (Fifo_Available(&pool->fifo[second_channel]) >= need_second);
+    }
 
     if (ok) {
         uint8_t value = 0U;
         uint8_t i;
 
-        for (i = 0U; i < 8U; i++) {
-            entropy_fifo_t *fifo = &pool->fifo[i & 0x1U];
+        for (i = 0U; i < nbits; i++) {
+            entropy_fifo_t *fifo = &pool->fifo[(i & 0x1U) ^ first_channel];
             value = (uint8_t)((uint8_t)(value << 1) | fifo->bits[fifo->head]);
             fifo->head++;
         }
@@ -80,4 +94,34 @@ bool Entropy_Pool_TakeByte(entropy_pool_t *pool, uint8_t *out)
     }
 
     return ok;
+}
+
+uint8_t Entropy_Pool_DrawBits(uint16_t range, uint16_t *accept_below)
+{
+    uint8_t best_bits = ENTROPY_MAX_DRAW_BITS;
+    uint32_t best_span = 0U;
+    uint32_t best_accept = 0U;
+    uint8_t bits;
+
+    if ((range >= 1U) && (range <= (1U << ENTROPY_MAX_DRAW_BITS))) {
+        for (bits = 1U; bits <= ENTROPY_MAX_DRAW_BITS; bits++) {
+            uint32_t span = 1UL << bits;
+
+            if (span >= range) {
+                uint32_t accept = (span / range) * range;
+
+                /* Compares bits*span/accept between candidates without
+                 * division: at most 8 * 256 * 256, well inside 32 bits. */
+                if ((best_accept == 0U) ||
+                    (((uint32_t)bits * span * best_accept) < ((uint32_t)best_bits * best_span * accept))) {
+                    best_bits = bits;
+                    best_span = span;
+                    best_accept = accept;
+                }
+            }
+        }
+    }
+
+    *accept_below = (uint16_t)best_accept;
+    return best_bits;
 }
