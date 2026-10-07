@@ -22,7 +22,12 @@
 > `example.com` table. **Part 2 at the end of this file** (`# Part 2 — Stage C`)
 > is the guide for the current firmware: first setup, login, change of master
 > key, partition integrity, and the panic button in every mode. The PC suite
-> `tests/host/run.sh` covers Stage C as well.
+> `tests/host/run.sh` covers Stage C as well. `tools/` also has two live gdb
+> trace tools that drive gdb for you and show what the board actually does,
+> step by step: `tools/mk_auth_trace.md` (login, try this one first) and
+> `tools/other_modes_trace.md` (first-time setup, key change, decrypt +
+> show, and ADC entropy + save, one section per mode, run with
+> `--mode {first_meet,change_mk,retrieve,generate}`).
 
 Everything you need is in this file: every section says **what to type**,
 **why** the test exists, **what you should see**, and **what it means and what to
