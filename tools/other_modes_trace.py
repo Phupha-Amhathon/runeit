@@ -69,6 +69,7 @@ from _gdb_trace_common import (  # noqa: E402
     locate_gdb, pace,
 )
 
+PARTITION_HEADER_SIZE = 112
 PWD_ENTRY_SIZE = 48  # char name[16] + char password[32], Inc/app/password_table.h
 PWD_TABLE_MAX_ENTRIES = 31  # ids 0-30; mode_retrieve.c's ParseId() returns this for "invalid"
 ENTROPY_BLOCK_SAMPLES = 512  # Inc/crypto/entropy_pool.h

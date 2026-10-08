@@ -6,8 +6,8 @@ What it shows, one pause per step:
   2. The current table is decrypted with the old key (mode_change_mk.c:66).
   3. The new salt, iterations, auth and enc are derived (kdf.c:71).
   4. The table is re-encrypted and committed to the inactive partition,
-     with the session key and nonce used for the encryption (session.c:170).
-  5. The mode returns to the menu (app.c:187).
+     with the session key and iv used for the encryption (session.c:170).
+  5. The mode returns to the menu (app.c:165).
 
 Breakpoints (5, under the 6-comparator ceiling measured on this board):
   - mode_change_mk.c:85    confirm entry compared.
@@ -65,6 +65,13 @@ console = Console()
 PARTITION_ADDR = {2: PARTITION_A_ADDR, 3: PARTITION_B_ADDR}
 PARTITION_NAME = {2: "A", 3: "B"}
 
+# name, offset, size - matches partition_header_t in Inc/app/partition_store.h
+HEADER_FIELDS = [
+    ("magic", 0, 4), ("version", 4, 4), ("kdf_iter", 8, 4),
+    ("salt", 12, 16), ("auth", 28, 32), ("iv", 60, 16),
+    ("tag", 76, 32), ("crc32", 108, 4),
+]
+
 
 def fresh_state():
     return {
@@ -73,13 +80,20 @@ def fresh_state():
         "old_raw": None, "old_dec": None, "old_addr": None, "old_count": None, "first_used": None,
         "salt": None, "iterations": None, "auth": None, "enc": None,
         "target_sector": None, "target_addr": None,
-        "commit_key": None, "commit_nonce": None, "commit_entry0": None,
+        "commit_key": None, "commit_iv": None, "commit_entry0": None,
         "session_key": None, "s_authorized": None, "g_state": None,
         "active_sector": None, "active_addr": None,
-        "flash_a": None, "flash_b": None,
+        "flash_a": None, "flash_b": None, "header_raw": None,
         "window_start": 0, "window": None,
         "pauses": {"typed": 0, "old": 0, "derived": 0, "committed": 0, "menu": 0},
     }
+
+
+def parse_header(raw_bytes):
+    magic, version, _kdf_iter, _salt, _auth, iv, tag, _crc32 = struct.unpack(
+        "<3I16s32s16s32sI", bytes(raw_bytes))
+    return {"valid": magic == PARTITION_MAGIC, "version": version,
+            "iv": bytes(iv), "tag": bytes(tag), "raw": bytes(raw_bytes)}
 
 
 def decode_c_string(raw):
@@ -119,6 +133,9 @@ def read_target_window(session, state):
     state["target_addr"] = PARTITION_ADDR[sector]
     state["window_start"] = 0
     state["window"] = [raw[i * PWD_ENTRY_SIZE:(i + 1) * PWD_ENTRY_SIZE] for i in range(WINDOW_SIZE)]
+    # read_flash() already pulled the full 112-byte header for both sectors;
+    # reuse it here rather than reading the same bytes from flash twice.
+    state["header_raw"] = (state["flash_b"] if sector == 3 else state["flash_a"])["raw"]
 
 
 def panel_input(state):
@@ -206,16 +223,15 @@ def panel_commit(state):
         t.add_row("target", Text("—", style=DIM))
         t.add_row("entry 0 (new key)", Text("—", style=DIM))
         t.add_row("session key (enc)", Text("—", style=DIM))
-        t.add_row("nonce", Text("—", style=DIM))
     else:
         sector = state["target_sector"]
         t.add_row("target", f"sector {sector} · {PARTITION_NAME[sector]} @ 0x{state['target_addr']:08x}")
         t.add_row(f"entry {state['first_used']} (new key)", Text(hexstr(state["commit_entry0"]), style="green", overflow="fold"))
         t.add_row("session key (enc)", Text(hexstr(state["commit_key"]), style="yellow", overflow="fold"))
-        t.add_row("nonce", f"{state['commit_nonce']} (0x{state['commit_nonce']:08x}), the new partition version")
     border = "green" if state["step"] == "committed" else "grey37"
     return Panel(t, title="[b]Re-encrypt and commit[/b]", title_align="left",
-                 subtitle="session.c:170", subtitle_align="left", border_style=border)
+                 subtitle="session.c:170 · AES-128-CTR, tag = HMAC over header + ciphertext",
+                 subtitle_align="left", border_style=border)
 
 
 def panel_flash(state):
@@ -235,7 +251,34 @@ def panel_flash(state):
                   f"@ 0x{PARTITION_B_ADDR:08x} · {b['status']} · "
                   f"version {b['version']}" + ("  [active]" if active == 3 else ""))
     return Panel(t, title="[b]Flash header[/b]", title_align="left",
-                 subtitle="live, every pause", subtitle_align="left", border_style="grey37")
+                 subtitle="live, every pause · see Header on flash below for iv/tag",
+                 subtitle_align="left", border_style="grey37")
+
+
+def panel_header_table(state):
+    t = Table(box=None, show_header=True, header_style=DIM, padding=(0, 1), expand=True)
+    t.add_column("field", style=DIM)
+    t.add_column("start address", style=DIM, no_wrap=True)
+    t.add_column("size", style=DIM, no_wrap=True)
+    t.add_column("value", overflow="fold")
+    raw = state["header_raw"]
+    committed = state["step"] == "committed"
+    if raw is None:
+        t.add_row("—", "—", "—", Text("—", style=DIM))
+        subtitle = "waiting for the first input"
+        border = "grey37"
+    else:
+        base = state["target_addr"]
+        for name, offset, size in HEADER_FIELDS:
+            value = raw[offset:offset + size]
+            style = "green" if committed else "grey50"
+            t.add_row(name, f"0x{base + offset:08x}", f"{size}B", Text(hexstr(value), style=style))
+        sector = state["target_sector"]
+        subtitle = (f"partition {PARTITION_NAME[sector]}, bytes 0-111 · just written" if committed
+                    else f"partition {PARTITION_NAME[sector]}, bytes 0-111 · its old header")
+        border = "green" if committed else "grey37"
+    return Panel(t, title="[b]Header on flash[/b]", title_align="left",
+                 subtitle=subtitle, subtitle_align="left", border_style=border)
 
 
 def panel_table(state):
@@ -272,6 +315,7 @@ def render(state):
     console.print(Text("change_mk_trace (tui)", style="bold"),
                   Text(" — live CHANGE_MK_MODE pipeline", style=DIM))
     console.print(grid)
+    console.print(panel_header_table(state))
     console.print(panel_table(state))
 
 
@@ -338,7 +382,7 @@ def handle_committed(session, state, auto_mode):
     read_target_window(session, state)
     target = state["target_sector"]
     header = state["flash_b"] if target == 3 else state["flash_a"]
-    state["commit_nonce"] = header["version"]
+    state["commit_iv"] = header["iv"]
     state["commit_key"] = state["enc"]
     entry_addr = state["target_addr"] + LAYOUT["header_len"] + state["first_used"] * PWD_ENTRY_SIZE
     state["commit_entry0"] = bytes(session.read_bytes(hex(entry_addr), PWD_ENTRY_SIZE))

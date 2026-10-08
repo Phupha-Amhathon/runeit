@@ -30,7 +30,7 @@ confirmed):
                                  (shared with FIRST_MEET/CHANGE_MK's salt
                                  generation, per other_modes_trace.py's
                                  generate mode) or partition_store.c/
-                                 xor_cipher.c (shared with RETRIEVE_MODE) -
+                                 aes_ctr.c (shared with RETRIEVE_MODE) -
                                  breaking only inside mode_generate.c's own
                                  static helpers avoids both of those
                                  cross-mode collisions entirely.
@@ -141,6 +141,12 @@ def read_input(session, state):
     charset_len = int(session.read_value("s_charset_len"))
     charset = session.read_bytes("s_charset", charset_len) if charset_len else []
     state["classes"] = bytes(charset).decode("ascii", errors="replace")
+
+
+def parse_header(raw_bytes):
+    magic, version, kdf_iter, salt, auth, _iv, _tag, crc32 = struct.unpack(
+        "<3I16s32s16s32sI", bytes(raw_bytes))
+    return {"valid": magic == PARTITION_MAGIC, "version": version}
 
 
 def border_for(state, name, color):
