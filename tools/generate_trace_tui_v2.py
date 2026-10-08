@@ -50,16 +50,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, build_arg_parser, die, hexstr, locate_gdb, pace,
+    read_partition_header,
 )
-
-PARTITION_STORE_H = Path(__file__).resolve().parent.parent / "Inc" / "app" / "partition_store.h"
-
-# Partition layout, taken from the firmware rather than copied here: the
-# header size from the ELF, magic and A/B addresses from partition_store.h.
-# Filled in by load_partition_layout() once gdb is connected.
-LAYOUT = {"header_len": None, "magic": None, "a_addr": None, "b_addr": None}
-ERASED_WORD = 0xFFFFFFFF
 
 try:
     from rich.console import Console, Group
@@ -98,39 +91,6 @@ def fresh_state():
         "flash_a": None, "flash_b": None,
         "entries": None,          # raw bytes of the first ENTRY_COUNT_SHOWN entries, active partition
     }
-
-
-def read_header_define(name):
-    """Integer value of a #define in Inc/app/partition_store.h."""
-    text = PARTITION_STORE_H.read_text()
-    m = re.search(r"^\s*#define\s+" + name + r"\s+(0[xX][0-9A-Fa-f]+|\d+)", text, re.M)
-    if not m:
-        die(f"could not find #define {name} in {PARTITION_STORE_H}")
-    return int(m.group(1), 0)
-
-
-def load_partition_layout(session):
-    """Header size comes from the ELF being debugged, so it always matches
-    the flashed firmware (64 bytes before the AES change, 112 after)."""
-    LAYOUT["header_len"] = int(session.read_value("sizeof(partition_header_t)"))
-    LAYOUT["magic"] = read_header_define("PARTITION_MAGIC")
-    LAYOUT["a_addr"] = read_header_define("PARTITION_A_ADDR")
-    LAYOUT["b_addr"] = read_header_define("PARTITION_B_ADDR")
-
-
-def read_partition_header(session, addr):
-    """Reads magic and version through the firmware's own struct type, so a
-    change in the header layout cannot shift these fields."""
-    hdr = f"((partition_header_t *){addr:#x})"
-    magic = session.read_int(f"{hdr}->magic")
-    version = session.read_int(f"{hdr}->version")
-    if magic == LAYOUT["magic"]:
-        status = "valid"
-    elif magic == ERASED_WORD:
-        status = "empty"
-    else:
-        status = "INVALID"
-    return {"status": status, "version": version}
 
 
 def read_input(session, state):
@@ -478,7 +438,6 @@ def main():
     try:
         session.connect(args.host, args.port)
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
-        load_partition_layout(session)
         print(f"Partition header: {LAYOUT['header_len']} bytes, magic 0x{LAYOUT['magic']:08x} "
               f"(from the ELF and Inc/app/partition_store.h).")
 

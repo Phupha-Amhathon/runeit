@@ -31,15 +31,14 @@ Requires: pip install pexpect rich
 """
 import os
 import re
-import struct
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, PARTITION_A_ADDR, PARTITION_B_ADDR, PARTITION_HEADER_LEN,
-    PARTITION_MAGIC, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, PARTITION_A_ADDR, PARTITION_B_ADDR,
+    build_arg_parser, die, hexstr, locate_gdb, pace, read_partition_header,
 )
 
 try:
@@ -83,12 +82,6 @@ def fresh_state():
     }
 
 
-def parse_header(raw_bytes):
-    magic, version, _kdf_iter, _salt, _auth, _crc32 = struct.unpack(
-        "<3I16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
-
-
 def decode_c_string(raw):
     return bytes(raw).split(b"\x00", 1)[0].decode("ascii", errors="replace")
 
@@ -103,8 +96,8 @@ def read_flash(session, state):
     """Real memory: s_active from partition_store.c, headers read from flash."""
     state["active_sector"] = int(session.read_value("'partition_store.c'::s_active.sector"))
     state["active_addr"] = session.read_int("'partition_store.c'::s_active.addr")
-    state["flash_a"] = parse_header(session.read_bytes(hex(PARTITION_A_ADDR), PARTITION_HEADER_LEN))
-    state["flash_b"] = parse_header(session.read_bytes(hex(PARTITION_B_ADDR), PARTITION_HEADER_LEN))
+    state["flash_a"] = read_partition_header(session, PARTITION_A_ADDR)
+    state["flash_b"] = read_partition_header(session, PARTITION_B_ADDR)
 
 
 def target_partition(state):
@@ -120,7 +113,7 @@ def read_target_window(session, state):
     s_active, so recomputing it afterward would pick the wrong partition.
     """
     sector = state["target_sector"] or target_partition(state)
-    addr = PARTITION_ADDR[sector] + PARTITION_HEADER_LEN
+    addr = PARTITION_ADDR[sector] + LAYOUT["header_len"]
     raw = bytes(session.read_bytes(hex(addr), WINDOW_SIZE * PWD_ENTRY_SIZE))
     state["target_sector"] = sector
     state["target_addr"] = PARTITION_ADDR[sector]
@@ -236,10 +229,10 @@ def panel_flash(state):
     else:
         active = state["active_sector"]
         t.add_row("sector 2 · A",
-                  f"@ 0x{PARTITION_A_ADDR:08x} · {'valid' if a['valid'] else 'INVALID'} · "
+                  f"@ 0x{PARTITION_A_ADDR:08x} · {a['status']} · "
                   f"version {a['version']}" + ("  [active]" if active == 2 else ""))
         t.add_row("sector 3 · B",
-                  f"@ 0x{PARTITION_B_ADDR:08x} · {'valid' if b['valid'] else 'INVALID'} · "
+                  f"@ 0x{PARTITION_B_ADDR:08x} · {b['status']} · "
                   f"version {b['version']}" + ("  [active]" if active == 3 else ""))
     return Panel(t, title="[b]Flash header[/b]", title_align="left",
                  subtitle="live, every pause", subtitle_align="left", border_style="grey37")
@@ -255,7 +248,7 @@ def panel_table(state):
         subtitle = "waiting for the first input"
     else:
         sector = state["target_sector"]
-        base = state["target_addr"] + PARTITION_HEADER_LEN
+        base = state["target_addr"] + LAYOUT["header_len"]
         for i, chunk in enumerate(state["window"]):
             entry_id = state["window_start"] + i
             style = "bold green" if state["step"] == "committed" and entry_id == state["first_used"] else None
@@ -317,7 +310,7 @@ def handle_old(session, state, auto_mode):
     first = used[0] if used else 0
     state["old_count"] = len(used)
     state["first_used"] = first
-    state["old_addr"] = state["active_addr"] + PARTITION_HEADER_LEN + first * PWD_ENTRY_SIZE
+    state["old_addr"] = state["active_addr"] + LAYOUT["header_len"] + first * PWD_ENTRY_SIZE
     state["old_raw"] = bytes(session.read_bytes(hex(state["old_addr"]), PWD_ENTRY_SIZE))
     state["old_dec"] = table[first * PWD_ENTRY_SIZE:(first + 1) * PWD_ENTRY_SIZE]
     read_target_window(session, state)
@@ -347,7 +340,7 @@ def handle_committed(session, state, auto_mode):
     header = state["flash_b"] if target == 3 else state["flash_a"]
     state["commit_nonce"] = header["version"]
     state["commit_key"] = state["enc"]
-    entry_addr = state["target_addr"] + PARTITION_HEADER_LEN + state["first_used"] * PWD_ENTRY_SIZE
+    entry_addr = state["target_addr"] + LAYOUT["header_len"] + state["first_used"] * PWD_ENTRY_SIZE
     state["commit_entry0"] = bytes(session.read_bytes(hex(entry_addr), PWD_ENTRY_SIZE))
     render(state)
     pause_or_fast(state, "committed", auto_mode)

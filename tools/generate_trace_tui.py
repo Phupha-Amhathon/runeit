@@ -67,15 +67,14 @@ Requires: pip install pexpect rich
 """
 import os
 import re
-import struct
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, PARTITION_A_ADDR, PARTITION_B_ADDR, PARTITION_HEADER_LEN,
-    PARTITION_MAGIC, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, PARTITION_A_ADDR, PARTITION_B_ADDR,
+    build_arg_parser, die, hexstr, locate_gdb, pace, read_partition_header,
 )
 
 try:
@@ -124,10 +123,8 @@ def read_persistent(session, state):
     state["active_addr"] = session.read_int("'partition_store.c'::s_active.addr")
     state["active_sector"] = session.read_value("'partition_store.c'::s_active.sector")
 
-    flash_a_raw = session.read_bytes(hex(PARTITION_A_ADDR), PARTITION_HEADER_LEN)
-    flash_b_raw = session.read_bytes(hex(PARTITION_B_ADDR), PARTITION_HEADER_LEN)
-    state["flash_a"] = parse_header(flash_a_raw)
-    state["flash_b"] = parse_header(flash_b_raw)
+    state["flash_a"] = read_partition_header(session, PARTITION_A_ADDR)
+    state["flash_b"] = read_partition_header(session, PARTITION_B_ADDR)
 
     chars_done = int(session.read_value("s_chars_done"))
     state["chars_done"] = chars_done
@@ -144,11 +141,6 @@ def read_input(session, state):
     charset_len = int(session.read_value("s_charset_len"))
     charset = session.read_bytes("s_charset", charset_len) if charset_len else []
     state["classes"] = bytes(charset).decode("ascii", errors="replace")
-
-
-def parse_header(raw_bytes):
-    magic, version, kdf_iter, salt, auth, crc32 = struct.unpack("<3I16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
 
 
 def border_for(state, name, color):
@@ -256,8 +248,8 @@ def panel_flash(state):
         t.add_row("active", Text("—", style=DIM))
     else:
         t.add_row("active", f"sector {state['active_sector']} @ 0x{state['active_addr']:08x}")
-        t.add_row("A (0x08008000)", f"{'valid' if a['valid'] else 'INVALID'} · version {a['version']}")
-        t.add_row("B (0x0800c000)", f"{'valid' if b['valid'] else 'INVALID'} · version {b['version']}")
+        t.add_row("A (0x08008000)", f"{a['status']} · version {a['version']}")
+        t.add_row("B (0x0800c000)", f"{b['status']} · version {b['version']}")
     return Panel(t, title="[b]Flash partitions[/b]", title_align="left",
                  subtitle="live, every pause", subtitle_align="left", border_style="grey37")
 
@@ -367,7 +359,7 @@ def handle_save(session, state, auto_mode):
     session.cmd("next")  # let Session_Save()/Partition_Store_Commit() finish
 
     active_addr = session.read_int("'partition_store.c'::s_active.addr")
-    addr = active_addr + PARTITION_HEADER_LEN + entry_id * PWD_ENTRY_SIZE
+    addr = active_addr + LAYOUT["header_len"] + entry_id * PWD_ENTRY_SIZE
     cipher = session.read_bytes(hex(addr), PWD_ENTRY_SIZE)
     state["save_addr"] = addr
     state["save_cipher"] = cipher

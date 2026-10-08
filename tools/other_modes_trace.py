@@ -65,11 +65,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, banner, build_arg_parser, die, dump_base_state, hexstr,
+    GdbSession, LAYOUT, banner, build_arg_parser, die, dump_base_state, hexstr,
     locate_gdb, pace,
 )
 
-PARTITION_HEADER_SIZE = 64
 PWD_ENTRY_SIZE = 48  # char name[16] + char password[32], Inc/app/password_table.h
 PWD_TABLE_MAX_ENTRIES = 31  # ids 0-30; mode_retrieve.c's ParseId() returns this for "invalid"
 ENTROPY_BLOCK_SAMPLES = 512  # Inc/crypto/entropy_pool.h
@@ -263,7 +262,7 @@ def retrieve_bp1(session, auto_mode):
     sector = session.read_value("'partition_store.c'::s_active.sector")
     version = session.read_value("'partition_store.c'::s_active.header.version")
     addr = session.read_int("'partition_store.c'::s_active.addr")
-    ciphertext = session.read_bytes(hex(addr + PARTITION_HEADER_SIZE), PWD_ENTRY_SIZE)
+    ciphertext = session.read_bytes(hex(addr + LAYOUT["header_len"]), PWD_ENTRY_SIZE)
     print(banner(1, "BEFORE - ciphertext at rest in flash (entry 0)"))
     print(f"  active partition: sector {sector}, version {version}, @ 0x{addr:08x}")
     print(f"  entry 0 raw bytes, straight from flash (looks like noise):")
@@ -372,7 +371,7 @@ def generate_bp3(session, auto_mode):
     print(f"  entry id {entry_id}: name={name_s!r} password={pwd_s!r}")
     session.cmd("next")  # let Session_Save()/Partition_Store_Commit() finish
     addr = session.read_int("'partition_store.c'::s_active.addr")
-    offset = PARTITION_HEADER_SIZE + (entry_id * PWD_ENTRY_SIZE)
+    offset = LAYOUT["header_len"] + (entry_id * PWD_ENTRY_SIZE)
     ciphertext = session.read_bytes(hex(addr + offset), PWD_ENTRY_SIZE)
     print(f"  same entry, now on flash, encrypted (looks like noise):")
     print(f"    {hexstr(ciphertext)}")
