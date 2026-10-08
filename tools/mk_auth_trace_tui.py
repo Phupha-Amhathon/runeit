@@ -32,7 +32,7 @@ prior FIRST_MEET (serial should show "== LOCKED ==" on reset, not
 
 This never decrypts the password table - Session_Authenticate only
 authenticates, it never calls Session_LoadTable (that only happens later,
-inside RETRIEVE_MODE/GENERATE_MODE). The "entry 0/1 (cipher)" panel below
+inside RETRIEVE_MODE/GENERATE_MODE). The "entry 0 (cipher)" row below
 is therefore always ciphertext, even right after a correct login - that is
 deliberate, and is itself the point: it shows the data is unreadable at
 rest regardless of whether the login just succeeded. For a plaintext
@@ -82,6 +82,13 @@ except ImportError:
 PWD_ENTRY_SIZE = 48  # char name[16] + char password[32], Inc/app/password_table.h
 DIM = "grey50"
 
+# name, offset, size - matches partition_header_t in Inc/app/partition_store.h
+HEADER_FIELDS = [
+    ("magic", 0, 4), ("version", 4, 4), ("kdf_iter", 8, 4),
+    ("salt", 12, 16), ("auth", 28, 32), ("iv", 60, 16),
+    ("tag", 76, 32), ("crc32", 108, 4),
+]
+
 console = Console()
 
 
@@ -117,7 +124,13 @@ def read_persistent(session, state):
 
     entry_base = active_addr + LAYOUT["header_len"]
     state["entry0"] = session.read_bytes(hex(entry_base), PWD_ENTRY_SIZE)
-    state["entry1"] = session.read_bytes(hex(entry_base + PWD_ENTRY_SIZE), PWD_ENTRY_SIZE)
+
+
+def parse_header(raw_bytes):
+    magic, version, _kdf_iter, _salt, _auth, _iv, tag, _crc32 = struct.unpack(
+        "<3I16s32s16s32sI", bytes(raw_bytes))
+    return {"valid": magic == PARTITION_MAGIC, "version": version,
+            "tag": bytes(tag), "raw": bytes(raw_bytes)}
 
 
 def diff_hex(a, b):
@@ -230,27 +243,56 @@ def panel_flash(state):
         t.add_row("A (0x08008000)",
                    f"{a['status']} · version {a['version']}")
         t.add_row("B (0x0800c000)",
-                   f"{b['status']} · version {b['version']}")
+                   f"{'valid' if b['valid'] else 'INVALID'} · version {b['version']}")
+        t.add_row("tag A (first 8)", hexstr(a["tag"][:8]) + " ...")
+        t.add_row("tag B (first 8)", hexstr(b["tag"][:8]) + " ...")
         t.add_row("", "")
         t.add_row("entry 0 (cipher)", hexstr(state["entry0"]))
-        t.add_row("entry 1 (cipher)", hexstr(state["entry1"]))
-    group = Group(t, Text("ciphertext — unreadable without the session key, even right now",
+    group = Group(t, Text("ciphertext — unreadable without the session key, even right now. "
+                           "the tag is checked before any decrypt, in RETRIEVE/GENERATE, not here.",
                            style=f"italic {DIM}"))
     return Panel(group, title="[b]Flash partitions[/b]", title_align="left",
                  subtitle="live, every pause", subtitle_align="left", border_style="grey37")
 
 
+def panel_header_table(state):
+    t = Table(box=None, show_header=True, header_style=DIM, padding=(0, 1), expand=True)
+    t.add_column("field", style=DIM)
+    t.add_column("start address", style=DIM, no_wrap=True)
+    t.add_column("size", style=DIM, no_wrap=True)
+    t.add_column("value", overflow="fold")
+    a = state.get("flash_a")
+    if a is None:
+        t.add_row("—", "—", "—", Text("—", style=DIM))
+        subtitle = "waiting for the first attempt"
+    else:
+        active = state["flash_b"] if state["active_sector"] == 3 else state["flash_a"]
+        raw = active["raw"]
+        base = state["active_addr"]
+        for name, offset, size in HEADER_FIELDS:
+            value = raw[offset:offset + size]
+            t.add_row(name, f"0x{base + offset:08x}", f"{size}B", hexstr(value))
+        subtitle = f"active partition, sector {state['active_sector']}, bytes 0-111"
+    group = Group(t, Text("nothing is written during login, so this never changes across steps",
+                          style=f"italic {DIM}"))
+    return Panel(group, title="[b]Header on flash[/b]", title_align="left",
+                 subtitle=subtitle, subtitle_align="left", border_style="grey37")
+
+
 def render(state):
     grid = Table.grid(expand=True, padding=(0, 1))
-    grid.add_column(ratio=3)
-    grid.add_column(ratio=2)
-    left = Group(panel_typed(state), panel_computed(state), panel_compared(state))
-    right = Group(panel_session(state), panel_flash(state))
-    grid.add_row(left, right)
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1.2)
+    grid.add_column(ratio=1)
+    col1 = Group(panel_typed(state), panel_compared(state))
+    col2 = Group(panel_computed(state))
+    col3 = Group(panel_session(state), panel_flash(state))
+    grid.add_row(col1, col2, col3)
     console.clear()
     console.print(Text("mk_auth_trace (tui)", style="bold"),
                   Text(" — live login pipeline, draft 1", style=DIM))
     console.print(grid)
+    console.print(panel_header_table(state))
 
 
 def handle_bp1(session, state):

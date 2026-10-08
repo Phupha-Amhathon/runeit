@@ -29,12 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ELF = REPO_ROOT / "Debug" / "runeit.elf"
 PARTITION_A_ADDR = 0x08008000
 PARTITION_B_ADDR = 0x0800C000
+PARTITION_HEADER_LEN = 112
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-PARTITION_STORE_H = REPO_ROOT / "Inc" / "app" / "partition_store.h"
-ERASED_WORD = 0xFFFFFFFF
-# Filled in by load_partition_layout(), called from GdbSession.connect().
-# A dict, not plain constants, so tools that imported it see the values.
-LAYOUT = {"header_len": None, "magic": None, "a_addr": None, "b_addr": None}
+PARTITION_MAGIC = 0x52554E33
 
 
 def die(message):
@@ -65,50 +62,16 @@ def locate_gdb(explicit):
         "for arm-none-eabi-gcc).")
 
 
-def read_header_define(name):
-    """Integer value of a #define in Inc/app/partition_store.h."""
-    text = PARTITION_STORE_H.read_text()
-    m = re.search(r"^\s*#define\s+" + name + r"\s+(0[xX][0-9A-Fa-f]+|\d+)", text, re.M)
-    if not m:
-        die(f"could not find #define {name} in {PARTITION_STORE_H}")
-    return int(m.group(1), 0)
-
-
-def load_partition_layout(session):
-    """Header size comes from the ELF being debugged, so it always matches
-    the flashed firmware (64 bytes before the AES change, 112 after)."""
-    LAYOUT["header_len"] = int(session.read_value("sizeof(partition_header_t)"))
-    LAYOUT["magic"] = read_header_define("PARTITION_MAGIC")
-    LAYOUT["a_addr"] = read_header_define("PARTITION_A_ADDR")
-    LAYOUT["b_addr"] = read_header_define("PARTITION_B_ADDR")
-
-
-def read_partition_header(session, addr):
-    """Reads magic and version through the firmware's own struct type, so a
-    change in the header layout cannot shift these fields."""
-    hdr = f"((partition_header_t *){addr:#x})"
-    magic = session.read_int(f"{hdr}->magic")
-    version = session.read_int(f"{hdr}->version")
-    if magic == LAYOUT["magic"]:
-        status = "valid"
-    elif magic == ERASED_WORD:
-        status = "empty"
-    else:
-        status = "INVALID"
-    return {"valid": status == "valid", "status": status, "version": version}
-
-
-def describe_flash_header(session, addr):
-    hdr = f"((partition_header_t *){addr:#x})"
-    info = read_partition_header(session, addr)
-    kdf_iter = session.read_int(f"{hdr}->kdf_iter")
-    crc32 = session.read_int(f"{hdr}->crc32")
-    salt = session.read_bytes(f"{hdr}->salt", 16)
-    auth = session.read_bytes(f"{hdr}->auth", 32)
-    return (f"{info['status']} version={info['version']} kdf_iter={kdf_iter} "
+def parse_flash_header(raw_bytes):
+    magic, version, kdf_iter, salt, auth, iv, tag, crc32 = struct.unpack(
+        "<3I16s32s16s32sI", bytes(raw_bytes))
+    valid = "valid" if magic == PARTITION_MAGIC else "UNRECOGNISED"
+    return (f"magic=0x{magic:08x} ({valid}) version={version} kdf_iter={kdf_iter} "
             f"crc32=0x{crc32:08x}\n"
             f"      salt={hexstr(salt)}\n"
-            f"      auth={hexstr(auth)}")
+            f"      auth={hexstr(auth)}\n"
+            f"      iv={hexstr(iv)}\n"
+            f"      tag={hexstr(tag)}")
 
 
 def banner(step, title):

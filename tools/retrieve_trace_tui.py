@@ -75,6 +75,12 @@ def fresh_state():
     }
 
 
+def parse_header(raw_bytes):
+    magic, version, _kdf_iter, _salt, _auth, _iv, tag, _crc32 = struct.unpack(
+        "<3I16s32s16s32sI", bytes(raw_bytes))
+    return {"valid": magic == PARTITION_MAGIC, "version": version, "tag": bytes(tag)}
+
+
 def decode_c_string(raw):
     return bytes(raw).split(b"\x00", 1)[0].decode("ascii", errors="replace")
 
@@ -214,8 +220,12 @@ def panel_flash(state):
         t.add_row("sector 3 · B",
                   f"@ 0x{PARTITION_B_ADDR:08x} · {b['status']} · "
                   f"version {b['version']}" + ("  [active]" if not active_a else ""))
+    if a is not None:
+        t.add_row("tag A", Text(hexstr(a["tag"][:8]) + " ...", style=DIM))
+        t.add_row("tag B", Text(hexstr(b["tag"][:8]) + " ...", style=DIM))
     return Panel(t, title="[b]Flash header[/b]", title_align="left",
-                 subtitle="nothing is written in this mode", subtitle_align="left",
+                 subtitle="nothing is written here; the table decrypts only after its tag verifies",
+                 subtitle_align="left",
                  border_style="grey37")
 
 
@@ -236,7 +246,7 @@ def panel_table(state):
                       hexstr(chunk), style=style)
         title_loc = (f"entries {state['window_start']}–"
                      f"{state['window_start'] + WINDOW_SIZE - 1} · "
-                     f"active partition + 64, each entry 48 bytes, all ciphertext")
+                     f"active partition + 112, each entry 48 bytes, all ciphertext")
     return Panel(t, title="[b]Password table on flash[/b]", title_align="left",
                  subtitle=title_loc, subtitle_align="left", border_style="grey37")
 
