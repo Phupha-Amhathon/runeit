@@ -138,7 +138,7 @@ def setup_first_meet(session):
     session.cmd(f"condition {bp2} 'app.c'::g_state == APP_STATE_FIRST_MEET")
     bp3 = session.set_checked_breakpoint_by_line("session.c", 170)
     session.cmd(f"condition {bp3} 'app.c'::g_state == APP_STATE_FIRST_MEET")
-    bp4 = session.set_checked_breakpoint_by_line("app.c", 117)
+    bp4 = session.set_checked_breakpoint_by_line("app.c", 139)
     print("Type a master key twice at the board's '== FIRST TIME SETUP ==' serial")
     print("prompt to begin.")
     handlers = {bp1: first_meet_bp1, bp2: first_meet_bp2,
@@ -229,7 +229,7 @@ def setup_change_mk(session):
     session.cmd(f"condition {bp3} 'app.c'::g_state == APP_STATE_CHANGE_MK_MODE")
     bp4 = session.set_checked_breakpoint_by_line("session.c", 170)
     session.cmd(f"condition {bp4} 'app.c'::g_state == APP_STATE_CHANGE_MK_MODE")
-    bp5 = session.set_checked_breakpoint_by_line("app.c", 165)
+    bp5 = session.set_checked_breakpoint_by_line("app.c", 187)
     print("Log in first over the serial terminal, choose 'Change master key' from")
     print("the menu, then type the new key twice to begin.")
     handlers = {bp1: change_mk_bp1, bp2: change_mk_bp2, bp3: change_mk_bp3,

@@ -481,3 +481,9 @@ mode_status_t Mode_Generate_Run(void)
     }
     return status;
 }
+
+bool Mode_Generate_IsSampling(void)
+{
+    return (s_sub == GEN_SUB_START_ROUND) || (s_sub == GEN_SUB_WAIT_TEMP) ||
+           (s_sub == GEN_SUB_WAIT_LIGHT);
+}

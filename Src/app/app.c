@@ -4,6 +4,7 @@
 #include "app_types.h"
 #include "usart_drv.h"
 #include "exti_drv.h"
+#include "status_led.h"
 #include "partition_store.h"
 #include "password_table.h"
 #include "session.h"
@@ -28,6 +29,7 @@ static const char s_menu_text[] =
 static void App_PanicHandler(void)
 {
     Session_Wipe();
+    Status_Led_Off();
     Mode_Retrieve_Wipe();
     Mode_FirstMeet_Wipe();
     Mode_MkAuth_Wipe();
@@ -40,6 +42,7 @@ static void App_PanicHandler(void)
 
 void App_Init(void)
 {
+    Status_Led_Init();
     EXTI_Drv_SetPanicCallback(App_PanicHandler);
 }
 
@@ -80,6 +83,22 @@ static void HandleModeSelection(bool entered)
     }
 }
 
+static status_led_mode_t LedModeFor(app_state_t state)
+{
+    status_led_mode_t mode = STATUS_LED_IDLE;
+
+    if (!Session_IsAuthorized()) {
+        mode = STATUS_LED_LOCKED;
+    } else if ((state == APP_STATE_GENERATE_MODE) && Mode_Generate_IsSampling()) {
+        mode = STATUS_LED_QUIET;
+    } else if ((state == APP_STATE_GENERATE_MODE) || (state == APP_STATE_CHANGE_MK_MODE)) {
+        mode = STATUS_LED_BUSY;
+    } else {
+        /* logged in, no write in progress */
+    }
+    return mode;
+}
+
 static bool StateNeedsSession(app_state_t state)
 {
     return (state != APP_STATE_INIT) && (state != APP_STATE_FIRST_MEET) && (state != APP_STATE_MK_AUTH);
@@ -103,6 +122,9 @@ void App_Run(void)
         }
         prev_state = state;
 
+        /* Before the switch: a mode about to start ADC sampling finds the
+         * LEDs already dark. */
+        (void)Status_Led_Show(LedModeFor(state));
 
         switch (state) {
         case APP_STATE_INIT:

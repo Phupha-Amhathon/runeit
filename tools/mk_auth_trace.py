@@ -124,7 +124,7 @@ def main():
         bp2 = session.set_checked_breakpoint_by_line("kdf.c", 71)
         session.cmd(f"condition {bp2} 'app.c'::g_state == APP_STATE_MK_AUTH")
         bp3 = session.set_checked_breakpoint_by_line("session.c", 136)
-        bp4 = session.set_checked_breakpoint_by_line("app.c", 127)
+        bp4 = session.set_checked_breakpoint_by_line("app.c", 149)
         handlers = {bp1: handle_bp1, bp2: handle_bp2, bp3: handle_bp3, bp4: handle_bp4}
 
         print("\nAll breakpoints verified against the loaded ELF.")
