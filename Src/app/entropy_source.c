@@ -3,6 +3,7 @@
 #include "entropy_pool.h"
 #include "secure_zero.h"
 #include "systick_drv.h"
+#include "status_led.h"
 
 #define ES_BLOCK_TIMEOUT_MS  200U
 #define ES_MAX_ROUNDS        40U
@@ -32,6 +33,7 @@ bool Entropy_Source_GetBytes(uint8_t *out, size_t len)
     size_t produced = 0U;
     uint32_t rounds = 0U;
     bool ok = true;
+    status_led_mode_t led_prev = Status_Led_Show(STATUS_LED_QUIET);
 
     Entropy_Pool_Init(&s_pool);
 
@@ -54,5 +56,6 @@ bool Entropy_Source_GetBytes(uint8_t *out, size_t len)
 
     Secure_Zero(s_samples, sizeof(s_samples));
     Secure_Zero(&s_pool, sizeof(s_pool));
+    Status_Led_Restore(led_prev);
     return ok;
 }

@@ -7,14 +7,14 @@ What it shows, one pause per step:
   3. The new salt, iterations, auth and enc are derived (kdf.c:71).
   4. The table is re-encrypted and committed to the inactive partition,
      with the session key and nonce used for the encryption (session.c:170).
-  5. The mode returns to the menu (app.c:169).
+  5. The mode returns to the menu (app.c:187).
 
 Breakpoints (5, under the 6-comparator ceiling measured on this board):
   - mode_change_mk.c:85    confirm entry compared.
   - mode_change_mk.c:66    old table decrypted, before SetNewKey.
   - kdf.c:71               auth derived, enc not yet.
   - session.c:170         partition committed and session reopened.
-  - app.c:169              mode returned to MODE_SELECTION.
+  - app.c:187              mode returned to MODE_SELECTION.
 
 Precondition: a session must already be open. Log in over the serial
 terminal first, then choose "Change master key". Start this tool before
@@ -377,7 +377,7 @@ def main():
         bp_old = session.set_checked_breakpoint_by_line("mode_change_mk.c", 66)
         bp_derived = session.set_checked_breakpoint_by_line("kdf.c", 71)
         bp_committed = session.set_checked_breakpoint_by_line("session.c", 170)
-        bp_menu = session.set_checked_breakpoint_by_line("app.c", 169)
+        bp_menu = session.set_checked_breakpoint_by_line("app.c", 187)
         handlers = {bp_confirm: handle_confirm, bp_old: handle_old,
                     bp_derived: handle_derived, bp_committed: handle_committed,
                     bp_menu: handle_menu}
