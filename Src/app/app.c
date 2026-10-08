@@ -4,6 +4,7 @@
 #include "app_types.h"
 #include "usart_drv.h"
 #include "exti_drv.h"
+#include "led_drv.h"
 #include "partition_store.h"
 #include "password_table.h"
 #include "session.h"
@@ -28,6 +29,7 @@ static const char s_menu_text[] =
 static void App_PanicHandler(void)
 {
     Session_Wipe();
+    Led_Drv_Set(false);
     Mode_Retrieve_Wipe();
     Mode_FirstMeet_Wipe();
     Mode_MkAuth_Wipe();
@@ -103,6 +105,8 @@ void App_Run(void)
         }
         prev_state = state;
 
+        /* The LED mirrors the session, so no mode has to drive it. */
+        Led_Drv_Set(Session_IsAuthorized());
 
         switch (state) {
         case APP_STATE_INIT:

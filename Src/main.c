@@ -10,6 +10,7 @@
 #include "usart_drv.h"
 #include "crc_drv.h"
 #include "adc_drv.h"
+#include "led_drv.h"
 #include "app.h"
 
 #if !defined(__SOFT_FP__) && defined(__ARM_FP)
@@ -24,6 +25,7 @@ int main(void)
     USART_Drv_Init();
     CRC_Drv_Init();
     ADC_Drv_Init();
+    Led_Drv_Init();
 
     App_Init();
     App_Run(); /* never returns */
