@@ -14,6 +14,8 @@
 #include "mode_change_mk.h"
 #include "mode_generate.h"
 
+#define MENU_LINE_LEN 8U
+
 static volatile app_state_t g_state = APP_STATE_INIT;
 
 static const char s_menu_text[] =
@@ -55,18 +57,26 @@ static void SendMenu(void)
 static void HandleInit(void)
 {
     Partition_Store_Init();
-    g_state = (Partition_Store_Active() == NULL) ? APP_STATE_FIRST_MEET : APP_STATE_MK_AUTH;
+    if (Partition_Store_Active() == NULL) {
+        g_state = APP_STATE_FIRST_MEET;
+    } else {
+        g_state = APP_STATE_MK_AUTH;
+    }
 }
 
 static void HandleModeSelection(bool entered)
 {
-    char line[8];
+    char line[MENU_LINE_LEN];
 
     if (entered) {
         SendMenu();
+    } else {
+        /* No action */
     }
     if (!USART_Drv_RxComplete()) {
         return;
+    } else {
+        /* No action */
     }
 
     (void)USART_Drv_TakeLine(line, sizeof(line));
@@ -119,6 +129,8 @@ void App_Run(void)
         if (StateNeedsSession(state) && !Session_IsAuthorized()) {
             g_state = APP_STATE_INIT;
             state = APP_STATE_INIT;
+        } else {
+            /* No action */
         }
         prev_state = state;
 
@@ -134,15 +146,21 @@ void App_Run(void)
         case APP_STATE_FIRST_MEET:
             if (entered) {
                 Mode_FirstMeet_Enter();
+            } else {
+                /* No action */
             }
             if (Mode_FirstMeet_Run() == MODE_DONE) {
                 g_state = APP_STATE_MODE_SELECTION;
+            } else {
+                /* No action */
             }
             break;
 
         case APP_STATE_MK_AUTH:
             if (entered) {
                 Mode_MkAuth_Enter();
+            } else {
+                /* No action */
             }
             switch (Mode_MkAuth_Run()) {
             case MODE_DONE:
@@ -173,18 +191,26 @@ void App_Run(void)
         case APP_STATE_GENERATE_MODE:
             if (entered) {
                 Mode_Generate_Enter();
+            } else {
+                /* No action */
             }
             if (Mode_Generate_Run() != MODE_RUNNING) {
                 g_state = APP_STATE_MODE_SELECTION;
+            } else {
+                /* No action */
             }
             break;
 
         case APP_STATE_CHANGE_MK_MODE:
             if (entered) {
                 Mode_ChangeMk_Enter();
+            } else {
+                /* No action */
             }
             if (Mode_ChangeMk_Run() != MODE_RUNNING) {
                 g_state = APP_STATE_MODE_SELECTION;
+            } else {
+                /* No action */
             }
             break;
 

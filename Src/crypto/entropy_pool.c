@@ -1,6 +1,10 @@
 #include <string.h>
 #include "entropy_pool.h"
 
+#define SAMPLE_LSB      0x1U /* only the lowest ADC bit is harvested */
+#define VN_PAIR_LEN     2U   /* Von Neumann consumes samples two at a time */
+#define CHANNEL_TOGGLE  0x1U /* channel ^ 1 = the other of the two channels */
+
 static uint16_t Fifo_Available(const entropy_fifo_t *fifo)
 {
     return (uint16_t)(fifo->count - fifo->head);
@@ -14,6 +18,8 @@ static void Fifo_Compact(entropy_fifo_t *fifo)
         (void)memmove(fifo->bits, &fifo->bits[fifo->head], remaining);
         fifo->head = 0U;
         fifo->count = remaining;
+    } else {
+        /* No action */
     }
 }
 
@@ -38,23 +44,31 @@ bool Entropy_Pool_Absorb(entropy_pool_t *pool, uint8_t channel,
         for (i = 0U; i < count; i++) {
             if (RNG_Health_Check(&pool->health[channel], samples[i]) != RNG_HEALTH_OK) {
                 ok = false;
+            } else {
+                /* No action */
             }
         }
+    } else {
+        /* No action */
     }
 
     if (ok) {
         entropy_fifo_t *fifo = &pool->fifo[channel];
 
         Fifo_Compact(fifo);
-        for (i = 0U; (uint16_t)(i + 1U) < count; i = (uint16_t)(i + 2U)) {
-            uint16_t first = samples[i] & 0x1U;
-            uint16_t second = samples[i + 1U] & 0x1U;
+        for (i = 0U; (uint16_t)(i + 1U) < count; i = (uint16_t)(i + VN_PAIR_LEN)) {
+            uint16_t first = samples[i] & SAMPLE_LSB;
+            uint16_t second = samples[i + 1U] & SAMPLE_LSB;
 
             if ((first != second) && (fifo->count < ENTROPY_FIFO_CAP)) {
                 fifo->bits[fifo->count] = (uint8_t)first;
                 fifo->count++;
+            } else {
+                /* No action */
             }
         }
+    } else {
+        /* No action */
     }
 
     return ok;
@@ -72,13 +86,15 @@ bool Entropy_Pool_TakeBits(entropy_pool_t *pool, uint8_t nbits, uint8_t first_ch
               (first_channel < ENTROPY_CHANNELS);
 
     if (ok) {
-        uint8_t second_channel = (uint8_t)(first_channel ^ 0x1U);
+        uint8_t second_channel = (uint8_t)(first_channel ^ CHANNEL_TOGGLE);
         /* The first channel serves bits 0, 2, 4, ... so it owes the extra one. */
-        uint16_t need_first = (uint16_t)((nbits + 1U) / 2U);
-        uint16_t need_second = (uint16_t)(nbits / 2U);
+        uint16_t need_first = (uint16_t)((nbits + 1U) / ENTROPY_CHANNELS);
+        uint16_t need_second = (uint16_t)(nbits / ENTROPY_CHANNELS);
 
         ok = (Fifo_Available(&pool->fifo[first_channel]) >= need_first) &&
              (Fifo_Available(&pool->fifo[second_channel]) >= need_second);
+    } else {
+        /* No action */
     }
 
     if (ok) {
@@ -86,11 +102,13 @@ bool Entropy_Pool_TakeBits(entropy_pool_t *pool, uint8_t nbits, uint8_t first_ch
         uint8_t i;
 
         for (i = 0U; i < nbits; i++) {
-            entropy_fifo_t *fifo = &pool->fifo[(i & 0x1U) ^ first_channel];
-            value = (uint8_t)((uint8_t)(value << 1) | fifo->bits[fifo->head]);
+            entropy_fifo_t *fifo = &pool->fifo[(i & CHANNEL_TOGGLE) ^ first_channel];
+            value = (uint8_t)((uint8_t)(value << 1U) | fifo->bits[fifo->head]);
             fifo->head++;
         }
         *out = value;
+    } else {
+        /* No action */
     }
 
     return ok;
@@ -117,9 +135,15 @@ uint8_t Entropy_Pool_DrawBits(uint16_t range, uint16_t *accept_below)
                     best_bits = bits;
                     best_span = span;
                     best_accept = accept;
+                } else {
+                    /* No action */
                 }
+            } else {
+                /* No action */
             }
         }
+    } else {
+        /* No action */
     }
 
     *accept_below = (uint16_t)best_accept;

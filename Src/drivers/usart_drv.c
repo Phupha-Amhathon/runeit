@@ -11,6 +11,11 @@
 #define USART_DMA_RX_STREAM   DMA1_Stream5
 #define USART_DMA_CHANNEL4    (4UL << DMA_SxCR_CHSEL_Pos)
 
+#define USART2_GPIO_AF7       7U      /* PA2/PA3 alternate function for USART2 */
+#define USART2_BRR_115200     0x008BU /* 16 MHz HSI / (16 x 115200) = 8.6875: mantissa 8, fraction 11 */
+#define USART_PRIO_IDLE       1U
+#define USART_PRIO_DMA        2U
+
 static volatile bool s_tx_ready = true;
 static volatile bool s_rx_complete = false;
 
@@ -40,12 +45,12 @@ void USART_Drv_Init(void)
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 
     /* PA2 = TX, PA3 = RX, AF7 (USART2) */
-    GPIOA->MODER &= ~((3U << (2U * 2U)) | (3U << (3U * 2U)));
-    GPIOA->MODER |=  ((2U << (2U * 2U)) | (2U << (3U * 2U)));
-    GPIOA->AFR[0] &= ~((0xFU << (2U * 4U)) | (0xFU << (3U * 4U)));
-    GPIOA->AFR[0] |=  ((7U << (2U * 4U)) | (7U << (3U * 4U)));
+    GPIOA->MODER &= ~(GPIO_MODER_MODER2 | GPIO_MODER_MODER3);
+    GPIOA->MODER |=  (GPIO_MODER_MODER2_1 | GPIO_MODER_MODER3_1);
+    GPIOA->AFR[0] &= ~(GPIO_AFRL_AFSEL2 | GPIO_AFRL_AFSEL3);
+    GPIOA->AFR[0] |=  ((USART2_GPIO_AF7 << GPIO_AFRL_AFSEL2_Pos) | (USART2_GPIO_AF7 << GPIO_AFRL_AFSEL3_Pos));
 
-    USART2->BRR = 0x008BU; /* 115200 @ 16 MHz HSI */
+    USART2->BRR = USART2_BRR_115200;
     USART2->CR3 = USART_CR3_DMAT | USART_CR3_DMAR;
     USART2->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE | USART_CR1_IDLEIE;
 
@@ -61,11 +66,11 @@ void USART_Drv_Init(void)
 
     /* Below the panic button's priority (0, see exti_drv.c) so a button
      * press always preempts in-flight UART activity. */
-    NVIC_SetPriority(DMA1_Stream6_IRQn, 2);
+    NVIC_SetPriority(DMA1_Stream6_IRQn, USART_PRIO_DMA);
     NVIC_EnableIRQ(DMA1_Stream6_IRQn);
-    NVIC_SetPriority(DMA1_Stream5_IRQn, 2);
+    NVIC_SetPriority(DMA1_Stream5_IRQn, USART_PRIO_DMA);
     NVIC_EnableIRQ(DMA1_Stream5_IRQn);
-    NVIC_SetPriority(USART2_IRQn, 1);
+    NVIC_SetPriority(USART2_IRQn, USART_PRIO_IDLE);
     NVIC_EnableIRQ(USART2_IRQn);
 }
 
@@ -73,6 +78,8 @@ bool USART_Drv_Send(const uint8_t *buf, uint16_t len)
 {
     if (!s_tx_ready || (len == 0U)) {
         return false;
+    } else {
+        /* No action */
     }
 
     s_tx_ready = false;
@@ -93,11 +100,6 @@ bool USART_Drv_Send(const uint8_t *buf, uint16_t len)
 bool USART_Drv_SendString(const char *str)
 {
     return USART_Drv_Send((const uint8_t *)str, (uint16_t)strlen(str));
-}
-
-bool USART_Drv_TxReady(void)
-{
-    return s_tx_ready;
 }
 
 void USART_Drv_WaitTxReady(void)
@@ -150,6 +152,8 @@ void DMA1_Stream6_IRQHandler(void)
     if ((DMA1->HISR & DMA_HISR_TCIF6) != 0U) {
         DMA1->HIFCR = DMA_HIFCR_CTCIF6;
         s_tx_ready = true;
+    } else {
+        /* No action */
     }
 }
 
@@ -161,6 +165,8 @@ void DMA1_Stream5_IRQHandler(void)
         DMA1->HIFCR = DMA_HIFCR_CTCIF5;
         s_rx_len = USART_DRV_RX_LINE_MAX;
         s_rx_complete = true;
+    } else {
+        /* No action */
     }
 }
 
@@ -192,6 +198,10 @@ void USART2_IRQHandler(void)
 
             s_rx_len = (uint16_t)(USART_DRV_RX_LINE_MAX - (uint16_t)USART_DMA_RX_STREAM->NDTR);
             s_rx_complete = true;
+        } else {
+            /* No action */
         }
+    } else {
+        /* No action */
     }
 }

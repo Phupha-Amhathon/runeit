@@ -22,6 +22,8 @@
 #define ENTROPY_BLOCK_SAMPLES   512U
 
 #define ENTROPY_CHANNELS        2U
+#define ENTROPY_CH_TEMP         0U  /* fifo/health index of the NTC channel */
+#define ENTROPY_CH_LIGHT        1U  /* fifo/health index of the LDR channel */
 
 /* One debiased bit per element. Sized for a fully unbiased block (half of
  * ENTROPY_BLOCK_SAMPLES pairs, one bit per pair) plus leftover bits carried

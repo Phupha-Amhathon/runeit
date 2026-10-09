@@ -26,9 +26,6 @@ bool USART_Drv_Send(const uint8_t *buf, uint16_t len);
 /** Convenience wrapper around USART_Drv_Send() for a NUL-terminated string. */
 bool USART_Drv_SendString(const char *str);
 
-/** True once the most recently queued TX has completed. */
-bool USART_Drv_TxReady(void);
-
 /** Blocks (spins on the software tx_ready flag, not a UART register) until
  * any in-flight TX finishes. Safe to call before USART_Drv_Send(). */
 void USART_Drv_WaitTxReady(void);

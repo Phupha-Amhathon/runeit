@@ -2,16 +2,22 @@
 #include "stm32f4xx.h"
 #include "led_drv.h"
 
+#define LED_PIN_BLUE     5U  /* PA5 */
+#define LED_PIN_RED      6U  /* PA6 */
+#define LED_PIN_YELLOW   7U  /* PA7 */
+#define LED_PIN_GREEN    6U  /* PB6 */
+#define MODER_BITS_PER_PIN 2U
+
 typedef struct {
     GPIO_TypeDef *port;
     uint32_t      pin;
 } led_pin_t;
 
 static const led_pin_t s_leds[LED_DRV_COUNT] = {
-    { GPIOA, 5U },
-    { GPIOA, 6U },
-    { GPIOA, 7U },
-    { GPIOB, 6U },
+    { GPIOA, LED_PIN_BLUE },
+    { GPIOA, LED_PIN_RED },
+    { GPIOA, LED_PIN_YELLOW },
+    { GPIOB, LED_PIN_GREEN },
 };
 
 void Led_Drv_Init(void)
@@ -26,8 +32,8 @@ void Led_Drv_Init(void)
 
         port->BSRR = 1UL << (pin + GPIO_BSRR_BR0_Pos); /* off before the pin starts driving */
         port->OTYPER &= ~(GPIO_OTYPER_OT0 << pin);
-        port->MODER &= ~(GPIO_MODER_MODER0 << (pin * 2U));
-        port->MODER |= GPIO_MODER_MODER0_0 << (pin * 2U);
+        port->MODER &= ~(GPIO_MODER_MODER0 << (pin * MODER_BITS_PER_PIN));
+        port->MODER |= GPIO_MODER_MODER0_0 << (pin * MODER_BITS_PER_PIN);
     }
 }
 
@@ -39,7 +45,13 @@ void Led_Drv_Set(led_drv_id_t led, bool on)
 
     if (i < (uint32_t)LED_DRV_COUNT) {
         uint32_t pin = s_leds[i].pin;
-        s_leds[i].port->BSRR = on ? (1UL << pin) : (1UL << (pin + GPIO_BSRR_BR0_Pos));
+        if (on) {
+            s_leds[i].port->BSRR = 1UL << pin;
+        } else {
+            s_leds[i].port->BSRR = 1UL << (pin + GPIO_BSRR_BR0_Pos);
+        }
+    } else {
+        /* No action */
     }
 }
 

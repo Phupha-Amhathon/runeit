@@ -2,11 +2,13 @@
 #include "hmac_sha256.h"
 #include "secure_zero.h"
 
-#define HMAC_BLOCK_LEN 64U
+#define HMAC_BLOCK_LEN SHA256_BLOCK_BYTES
+#define HMAC_IPAD      0x36U
+#define HMAC_OPAD      0x5CU
 
 void HmacSha256_Init(hmac_sha256_ctx_t *ctx, const uint8_t *key, size_t key_len)
 {
-    uint8_t k[HMAC_BLOCK_LEN] = {0};
+    uint8_t k[HMAC_BLOCK_LEN] = {0U};
     uint8_t pad[HMAC_BLOCK_LEN];
     size_t i;
 
@@ -17,13 +19,13 @@ void HmacSha256_Init(hmac_sha256_ctx_t *ctx, const uint8_t *key, size_t key_len)
     }
 
     for (i = 0U; i < HMAC_BLOCK_LEN; i++) {
-        pad[i] = k[i] ^ 0x36U;
+        pad[i] = k[i] ^ HMAC_IPAD;
     }
     SHA256_Init(&ctx->inner);
     SHA256_Update(&ctx->inner, pad, HMAC_BLOCK_LEN);
 
     for (i = 0U; i < HMAC_BLOCK_LEN; i++) {
-        pad[i] = k[i] ^ 0x5CU;
+        pad[i] = k[i] ^ HMAC_OPAD;
     }
     SHA256_Init(&ctx->outer);
     SHA256_Update(&ctx->outer, pad, HMAC_BLOCK_LEN);

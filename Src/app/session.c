@@ -16,6 +16,9 @@ static uint32_t s_op_generation = 0U;
 
 static const pwd_table_t s_empty_table;
 
+#define MK_CHAR_MIN 0x20U /* space, the first printable ASCII character */
+#define MK_CHAR_MAX 0x7EU /* '~', the last printable ASCII character */
+
 static bool KdfCancelled(void)
 {
     return s_generation != s_op_generation;
@@ -27,10 +30,14 @@ bool Session_MkPolicyOk(const char *mk, size_t len)
 
     if ((len < MK_MIN_LEN) || (len > MK_MAX_LEN)) {
         return false;
+    } else {
+        /* No action */
     }
     for (i = 0U; i < len; i++) {
-        if (((uint8_t)mk[i] < 0x20U) || ((uint8_t)mk[i] > 0x7EU)) {
+        if (((uint8_t)mk[i] < MK_CHAR_MIN) || ((uint8_t)mk[i] > MK_CHAR_MAX)) {
             return false;
+        } else {
+            /* No action */
         }
     }
     return true;
@@ -57,6 +64,8 @@ static bool OpenIfCurrent(uint32_t generation, const uint8_t enc[PARTITION_KEY_L
         (void)memcpy(s_key, enc, sizeof(s_key));
         s_authorized = true;
         ok = true;
+    } else {
+        /* No action */
     }
     Critical_Exit(saved);
     return ok;
@@ -70,6 +79,8 @@ static bool CopyKey(uint8_t out[PARTITION_KEY_LEN])
     if (s_authorized) {
         (void)memcpy(out, s_key, PARTITION_KEY_LEN);
         ok = true;
+    } else {
+        /* No action */
     }
     Critical_Exit(saved);
     return ok;
@@ -85,10 +96,18 @@ static bool CopyKey(uint8_t out[PARTITION_KEY_LEN])
 static void MakeSalt(uint8_t salt[PARTITION_SALT_LEN])
 {
     const partition_info_t *active = Partition_Store_Active();
-    uint32_t uid[3];
-    uint32_t mix = ((active != NULL) ? active->header.version : 0U) ^ SysTick_Drv_Millis();
+    uint32_t uid[UID_DRV_WORDS];
+    uint32_t version = 0U;
+    uint32_t mix;
     uint8_t noise[PARTITION_SALT_LEN];
     size_t i;
+
+    if (active != NULL) {
+        version = active->header.version;
+    } else {
+        /* No action */
+    }
+    mix = version ^ SysTick_Drv_Millis();
 
     Uid_Drv_Read(uid);
     (void)memcpy(salt, uid, sizeof(uid));
@@ -98,6 +117,8 @@ static void MakeSalt(uint8_t salt[PARTITION_SALT_LEN])
         for (i = 0U; i < PARTITION_SALT_LEN; i++) {
             salt[i] ^= noise[i];
         }
+    } else {
+        /* No action */
     }
     Secure_Zero(noise, sizeof(noise));
 }
@@ -113,9 +134,13 @@ session_result_t Session_Authenticate(const char *mk, size_t len)
 
     if (active == NULL) {
         return SESSION_NO_PARTITION;
+    } else {
+        /* No action */
     }
     if (!Session_MkPolicyOk(mk, len)) {
         return SESSION_WRONG_KEY;
+    } else {
+        /* No action */
     }
 
     header = active->header;
@@ -145,9 +170,17 @@ session_result_t Session_SetNewKey(const char *mk, size_t len, const pwd_table_t
     uint8_t enc[PARTITION_KEY_LEN];
     uint32_t generation;
     session_result_t result;
+    const pwd_table_t *to_save = &s_empty_table;
 
     if (!Session_MkPolicyOk(mk, len)) {
         return SESSION_INVALID_KEY;
+    } else {
+        /* No action */
+    }
+    if (table != NULL) {
+        to_save = table;
+    } else {
+        /* No action */
     }
 
     MakeSalt(salt);
@@ -158,8 +191,7 @@ session_result_t Session_SetNewKey(const char *mk, size_t len, const pwd_table_t
         result = SESSION_CANCELLED;
     } else if (generation != s_generation) {
         result = SESSION_CANCELLED;
-    } else if (!Partition_Store_Commit(enc, salt, KDF_ITERATIONS, auth,
-                                       (table != NULL) ? table : &s_empty_table)) {
+    } else if (!Partition_Store_Commit(enc, salt, KDF_ITERATIONS, auth, to_save)) {
         result = SESSION_STORAGE_ERROR;
     } else if (!OpenIfCurrent(generation, enc)) {
         result = SESSION_CANCELLED;
@@ -190,11 +222,15 @@ bool Session_Save(const pwd_table_t *table)
 
     if (active == NULL) {
         return false;
+    } else {
+        /* No action */
     }
     header = active->header;
 
     if (CopyKey(key)) {
         ok = Partition_Store_Commit(key, header.salt, header.kdf_iter, header.auth, table);
+    } else {
+        /* No action */
     }
     Secure_Zero(key, sizeof(key));
     return ok;

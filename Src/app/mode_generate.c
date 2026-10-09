@@ -22,9 +22,11 @@
 #define GEN_MAX_ROUNDS        40U
 #define GEN_BLOCK_TIMEOUT_MS  200U /* a 512-sample block takes about 3 ms */
 #define GEN_LINE_LEN          32U
+#define GEN_MAX_DIGITS        4U  /* longest number accepted at a prompt */
+#define GEN_DECIMAL_BASE      10U
 #define GEN_MSG_LEN           128U
 #define GEN_CHARSET_MAX_LEN   94U /* lower 26 + upper 26 + digit 10 + symbol 32 */
-#define GEN_FIRST_CHANNEL     1U  /* light first: an odd draw then spares the skewed temp channel */
+#define GEN_FIRST_CHANNEL     ENTROPY_CH_LIGHT /* light first: an odd draw then spares the skewed temp channel */
 static const char s_chars_lower[]  = "abcdefghijklmnopqrstuvwxyz";
 static const char s_chars_upper[]  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const char s_chars_digit[]  = "0123456789";
@@ -99,15 +101,17 @@ static bool ParseUnsigned(const char *text, uint32_t *value_out)
     bool ok = (text[0] != '\0');
 
     while (ok && (text[i] != '\0')) {
-        if ((text[i] < '0') || (text[i] > '9') || (i >= 4U)) {
+        if ((text[i] < '0') || (text[i] > '9') || (i >= GEN_MAX_DIGITS)) {
             ok = false;
         } else {
-            value = (value * 10U) + (uint32_t)(text[i] - '0');
+            value = (value * GEN_DECIMAL_BASE) + (uint32_t)(text[i] - '0');
         }
         i++;
     }
     if (ok) {
         *value_out = value;
+    } else {
+        /* No action */
     }
     return ok;
 }
@@ -121,6 +125,8 @@ static bool NameIsValid(const char *text)
     for (i = 0U; ok && (i < len); i++) {
         if ((text[i] < ' ') || (text[i] > '~')) {
             ok = false;
+        } else {
+            /* No action */
         }
     }
     return ok;
@@ -149,32 +155,55 @@ static bool BuildCharset(const char *letters)
 
     for (i = 0U; letters[i] != '\0'; i++) {
         switch (letters[i]) {
-        case 'l': case 'L': want_lower = true;  break;
-        case 'u': case 'U': want_upper = true;  break;
-        case 'd': case 'D': want_digit = true;  break;
-        case 's': case 'S': want_symbol = true; break;
-        default: break;
+        case 'l':
+        case 'L':
+            want_lower = true;
+            break;
+        case 'u':
+        case 'U':
+            want_upper = true;
+            break;
+        case 'd':
+        case 'D':
+            want_digit = true;
+            break;
+        case 's':
+        case 'S':
+            want_symbol = true;
+            break;
+        default:
+            break;
         }
     }
 
     s_charset_len = 0U;
     if (want_lower) {
         AppendCharClass(s_chars_lower);
+    } else {
+        /* No action */
     }
     if (want_upper) {
         AppendCharClass(s_chars_upper);
+    } else {
+        /* No action */
     }
     if (want_digit) {
         AppendCharClass(s_chars_digit);
+    } else {
+        /* No action */
     }
     if (want_symbol) {
         AppendCharClass(s_chars_symbol);
+    } else {
+        /* No action */
     }
 
     if (s_charset_len > 0U) {
         /* Draws below the threshold map to s_charset[draw % len], each character
          * equally likely; the bit count is the cheapest in debiased bits per char. */
         s_draw_bits = Entropy_Pool_DrawBits(s_charset_len, &s_reject_threshold);
+    } else {
+        /* No action */
     }
     return s_charset_len > 0U;
 }
@@ -187,6 +216,8 @@ static void ProduceChars(void)
         if ((uint16_t)value < s_reject_threshold) {
             s_pwd[s_chars_done] = s_charset[value % s_charset_len];
             s_chars_done++;
+        } else {
+            /* No action */
         }
     }
 }
@@ -258,6 +289,8 @@ static bool HandleName(const char *line)
             SendText("\r\nName must be 1-15 printable characters.\r\n");
             s_sub = GEN_SUB_PROMPT_NAME;
         }
+    } else {
+        /* No action */
     }
     return done;
 }
@@ -273,6 +306,8 @@ static bool HandleClasses(const char *line)
             SendText("\r\nPick at least one of l, u, d, s.\r\n");
             s_sub = GEN_SUB_PROMPT_CLASSES;
         }
+    } else {
+        /* No action */
     }
     return done;
 }
@@ -294,6 +329,8 @@ static bool HandleLength(const char *line)
             SendText("\r\nLength must be 1-31.\r\n");
             s_sub = GEN_SUB_PROMPT_LENGTH;
         }
+    } else {
+        /* No action */
     }
     return done;
 }
@@ -330,7 +367,7 @@ static bool StepSampling(void)
 
     case GEN_SUB_WAIT_TEMP:
         if (ADC_Drv_BlockReady()) {
-            if (!Entropy_Pool_Absorb(&s_pool, 0U, s_samples, ENTROPY_BLOCK_SAMPLES) ||
+            if (!Entropy_Pool_Absorb(&s_pool, ENTROPY_CH_TEMP, s_samples, ENTROPY_BLOCK_SAMPLES) ||
                 !ADC_Drv_StartBlock(ADC_DRV_CH_LIGHT, s_samples, ENTROPY_BLOCK_SAMPLES)) {
                 failed = ReportEntropyFault();
             } else {
@@ -346,7 +383,7 @@ static bool StepSampling(void)
 
     case GEN_SUB_WAIT_LIGHT:
         if (ADC_Drv_BlockReady()) {
-            if (!Entropy_Pool_Absorb(&s_pool, 1U, s_samples, ENTROPY_BLOCK_SAMPLES)) {
+            if (!Entropy_Pool_Absorb(&s_pool, ENTROPY_CH_LIGHT, s_samples, ENTROPY_BLOCK_SAMPLES)) {
                 failed = ReportEntropyFault();
             } else {
                 MarkWaitStart();
@@ -385,6 +422,8 @@ static bool SaveEntry(void)
         /* Session_Save() reports false unless the new partition read back
          * from flash carries the version it just wrote. */
         saved = Session_Save(&s_table);
+    } else {
+        /* No action */
     }
     Critical_Exit(saved_mask);
     return saved;
@@ -433,8 +472,11 @@ mode_status_t Mode_Generate_Run(void)
                 if (s_sub == GEN_SUB_WAIT_ID) {
                     done = HandleId(line);
                 } else if (s_sub == GEN_SUB_WAIT_OVERWRITE) {
-                    s_sub = ((line[0] == 'y') || (line[0] == 'Y')) ? GEN_SUB_PROMPT_NAME
-                                                                   : GEN_SUB_PROMPT_ID;
+                    if ((line[0] == 'y') || (line[0] == 'Y')) {
+                        s_sub = GEN_SUB_PROMPT_NAME;
+                    } else {
+                        s_sub = GEN_SUB_PROMPT_ID;
+                    }
                 } else if (s_sub == GEN_SUB_WAIT_NAME) {
                     done = HandleName(line);
                 } else if (s_sub == GEN_SUB_WAIT_CLASSES) {
@@ -442,6 +484,8 @@ mode_status_t Mode_Generate_Run(void)
                 } else {
                     done = HandleLength(line);
                 }
+            } else {
+                /* No action */
             }
             break;
 
@@ -478,6 +522,8 @@ mode_status_t Mode_Generate_Run(void)
         USART_Drv_WaitTxReady();
         ClearSecrets();
         status = MODE_DONE;
+    } else {
+        /* No action */
     }
     return status;
 }

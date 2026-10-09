@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdbool.h>
 #include "aes_ctr.h"
 #include "secure_zero.h"
 
@@ -13,9 +14,16 @@ void AesCtr_Apply(uint8_t *buf, size_t len,
     (void)memcpy(counter, iv, sizeof(counter));
 
     while (offset < len) {
-        size_t chunk = ((len - offset) < AES128_BLOCK_LEN) ? (len - offset) : AES128_BLOCK_LEN;
+        size_t chunk;
         size_t i;
-        int32_t pos;
+        size_t pos = AES128_BLOCK_LEN;
+        bool carry = true;
+
+        if ((len - offset) < AES128_BLOCK_LEN) {
+            chunk = len - offset;
+        } else {
+            chunk = AES128_BLOCK_LEN;
+        }
 
         Aes128_EncryptBlock(key, counter, keystream);
         for (i = 0U; i < chunk; i++) {
@@ -23,11 +31,11 @@ void AesCtr_Apply(uint8_t *buf, size_t len,
         }
         offset += chunk;
 
-        for (pos = (int32_t)AES128_BLOCK_LEN - 1; pos >= 0; pos--) {
+        /* Big-endian increment: carry into the next byte up only on wrap */
+        while (carry && (pos > 0U)) {
+            pos--;
             counter[pos]++;
-            if (counter[pos] != 0U) {
-                break;
-            }
+            carry = (counter[pos] == 0U);
         }
     }
 

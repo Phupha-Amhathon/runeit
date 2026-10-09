@@ -29,7 +29,4 @@ int main(void)
 
     App_Init();
     App_Run(); /* never returns */
-
-    for (;;) {
-    }
 }

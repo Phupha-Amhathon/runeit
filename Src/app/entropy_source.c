@@ -19,10 +19,14 @@ static bool RunBlock(adc_drv_channel_t channel, uint8_t pool_channel)
 
     if (!ADC_Drv_StartBlock(channel, s_samples, ENTROPY_BLOCK_SAMPLES)) {
         return false;
+    } else {
+        /* No action */
     }
     while (!ADC_Drv_BlockReady()) {
         if ((SysTick_Drv_Millis() - started) > ES_BLOCK_TIMEOUT_MS) {
             return false;
+        } else {
+            /* No action */
         }
     }
     return Entropy_Pool_Absorb(&s_pool, pool_channel, s_samples, ENTROPY_BLOCK_SAMPLES);
@@ -49,8 +53,10 @@ bool Entropy_Source_GetBytes(uint8_t *out, size_t len)
                 ok = false;
             } else {
                 rounds++;
-                ok = RunBlock(ADC_DRV_CH_TEMP, 0U) && RunBlock(ADC_DRV_CH_LIGHT, 1U);
+                ok = RunBlock(ADC_DRV_CH_TEMP, ENTROPY_CH_TEMP) && RunBlock(ADC_DRV_CH_LIGHT, ENTROPY_CH_LIGHT);
             }
+        } else {
+            /* No action */
         }
     }
 

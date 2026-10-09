@@ -14,7 +14,4 @@ uint32_t SysTick_Drv_Millis(void);
 
 void SysTick_Drv_SetTickCallback(systick_drv_tick_cb_t cb);
 
-/** Busy-waits (own tick counter, not a peripheral register) for ms milliseconds. */
-void SysTick_Drv_DelayMs(uint32_t ms);
-
 #endif /* SYSTICK_DRV_H */

@@ -24,6 +24,8 @@ static void Tick(void)
         if (s_lit) {
             Led_Drv_Set(s_chase[s_step], false);
             s_lit = false;
+        } else {
+            /* No action */
         }
         s_ms = 0U;
     } else if (!s_lit) {
@@ -37,6 +39,8 @@ static void Tick(void)
             Led_Drv_Set(s_chase[s_step], false);
             s_step = (s_step + 1U) % STATUS_LED_CHASE_LEN;
             Led_Drv_Set(s_chase[s_step], true);
+        } else {
+            /* No action */
         }
     }
 }
@@ -73,6 +77,8 @@ void Status_Led_Restore(status_led_mode_t prev)
 
     if (s_mode == STATUS_LED_QUIET) {
         (void)Status_Led_Show(prev);
+    } else {
+        /* No action */
     }
     Critical_Exit(saved);
 }
