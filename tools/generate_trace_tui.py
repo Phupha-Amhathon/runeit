@@ -18,11 +18,11 @@ plaintext going in next to the ciphertext that lands on flash.
 4 breakpoints, comfortably under the 6-hardware-comparator ceiling measured
 on this board (see tools/mk_auth_trace.md's history for how that was
 confirmed):
-  - mode_generate.c:333, :349  Entropy_Pool_Absorb() for the temp/light
+  - mode_generate.c:370, :386  Entropy_Pool_Absorb() for the temp/light
                                  ADC channels (unchanged from the earlier
                                  plain-text design).
-  - mode_generate.c:387         Session_Save() - the commit.
-  - mode_generate.c:187         NEW - the if (value < s_reject_threshold)
+  - mode_generate.c:424         Session_Save() - the commit.
+  - mode_generate.c:216         NEW - the if (value < s_reject_threshold)
                                  check inside ProduceChars(), where a
                                  debiased byte is accepted into the
                                  password or discarded. Never breakpoints
@@ -143,12 +143,6 @@ def read_input(session, state):
     state["classes"] = bytes(charset).decode("ascii", errors="replace")
 
 
-def parse_header(raw_bytes):
-    magic, version, kdf_iter, salt, auth, _iv, _tag, crc32 = struct.unpack(
-        "<3I16s32s16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
-
-
 def border_for(state, name, color):
     return color if state["highlight"] == name else "grey37"
 
@@ -212,7 +206,7 @@ def panel_mapping(state):
     group = Group(t, Text("values ≥ the cutoff are discarded so every character stays equally likely",
                            style=f"italic {DIM}"))
     return Panel(group, title="[b]Character mapping[/b]", title_align="left",
-                 subtitle="ProduceChars, mode_generate.c:187", subtitle_align="left",
+                 subtitle="ProduceChars, mode_generate.c:216", subtitle_align="left",
                  border_style=border)
 
 
@@ -231,7 +225,7 @@ def panel_save(state):
     group = Group(t, Text("run generate then retrieve_trace afterward to see this decrypt "
                            "back to the same password", style=f"italic {DIM}"))
     return Panel(group, title="[b]Save[/b]", title_align="left",
-                 subtitle="SaveEntry, mode_generate.c:387", subtitle_align="left",
+                 subtitle="SaveEntry, mode_generate.c:424", subtitle_align="left",
                  border_style=border)
 
 
@@ -310,11 +304,11 @@ def handle_absorb(session, state, auto_mode, channel, loc):
 
 
 def handle_temp(session, state, auto_mode):
-    handle_absorb(session, state, auto_mode, "temp (ADC_DRV_CH_TEMP)", "mode_generate.c:333")
+    handle_absorb(session, state, auto_mode, "temp (ADC_DRV_CH_TEMP)", "mode_generate.c:370")
 
 
 def handle_light(session, state, auto_mode):
-    handle_absorb(session, state, auto_mode, "light (ADC_DRV_CH_LIGHT)", "mode_generate.c:349")
+    handle_absorb(session, state, auto_mode, "light (ADC_DRV_CH_LIGHT)", "mode_generate.c:386")
 
 
 def read_draw_bits(session):
@@ -394,10 +388,10 @@ def main():
         session.connect(args.host, args.port)
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
 
-        bp_temp = session.set_checked_breakpoint_by_line("mode_generate.c", 333)
-        bp_light = session.set_checked_breakpoint_by_line("mode_generate.c", 349)
-        bp_mapping = session.set_checked_breakpoint_by_line("mode_generate.c", 187)
-        bp_save = session.set_checked_breakpoint_by_line("mode_generate.c", 387)
+        bp_temp = session.set_checked_breakpoint_by_line("mode_generate.c", 370)
+        bp_light = session.set_checked_breakpoint_by_line("mode_generate.c", 386)
+        bp_mapping = session.set_checked_breakpoint_by_line("mode_generate.c", 216)
+        bp_save = session.set_checked_breakpoint_by_line("mode_generate.c", 424)
         handlers = {bp_temp: handle_temp, bp_light: handle_light,
                     bp_mapping: handle_mapping, bp_save: handle_save}
 

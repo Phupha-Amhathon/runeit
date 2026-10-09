@@ -5,7 +5,7 @@ What it shows:
   - Choosing "Retrieve password" decrypts the whole table once, in one pass,
     into RAM (s_table). That happens before you type anything. This tool
     records it and does not pause for it.
-  - Each id you type pauses at the first line read (mode_retrieve.c:72):
+  - Each id you type pauses at the first line read (mode_retrieve.c:80):
     the raw 48 bytes from flash next to the same entry decrypted in RAM,
     the flash header, and the 10 flash entries around the id.
   - After the serial terminal prints the entry, a second pause (:78) shows
@@ -13,9 +13,9 @@ What it shows:
 
 Breakpoints (4, under the 6-comparator ceiling measured on this board):
   - Mode_Retrieve_Enter        menu choice enters RETRIEVE_MODE (no pause).
-  - mode_retrieve.c:28         table decrypted into RAM (no pause).
-  - mode_retrieve.c:72         first input line read (pause).
-  - mode_retrieve.c:78         entry printed (pause).
+  - mode_retrieve.c:34         table decrypted into RAM (no pause).
+  - mode_retrieve.c:80         first input line read (pause).
+  - mode_retrieve.c:88         entry printed (pause).
 
 Precondition: log in over the serial terminal, then choose "Retrieve
 password". Start this tool before you choose the menu item.
@@ -73,12 +73,6 @@ def fresh_state():
         "name": None, "password": None,
         "window_start": 0, "window": None,
     }
-
-
-def parse_header(raw_bytes):
-    magic, version, _kdf_iter, _salt, _auth, _iv, tag, _crc32 = struct.unpack(
-        "<3I16s32s16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version, "tag": bytes(tag)}
 
 
 def decode_c_string(raw):
@@ -165,7 +159,7 @@ def panel_input(state):
         t.add_row("shown password", Text("—", style=DIM))
     border = "green" if state["step"] == "shown" else ("cyan" if state["step"] == "input" else "grey37")
     return Panel(t, title="[b]Input[/b]", title_align="left",
-                 subtitle="mode_retrieve.c:72 / :78", subtitle_align="left",
+                 subtitle="mode_retrieve.c:80 / :78", subtitle_align="left",
                  border_style=border)
 
 
@@ -337,9 +331,9 @@ def main():
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
 
         bp_enter = session.set_checked_breakpoint_by_func("Mode_Retrieve_Enter")
-        bp_decrypted = session.set_checked_breakpoint_by_line("mode_retrieve.c", 28)
-        bp_input = session.set_checked_breakpoint_by_line("mode_retrieve.c", 72)
-        bp_shown = session.set_checked_breakpoint_by_line("mode_retrieve.c", 78)
+        bp_decrypted = session.set_checked_breakpoint_by_line("mode_retrieve.c", 34)
+        bp_input = session.set_checked_breakpoint_by_line("mode_retrieve.c", 80)
+        bp_shown = session.set_checked_breakpoint_by_line("mode_retrieve.c", 88)
         handlers = {bp_enter: handle_enter, bp_decrypted: handle_decrypted,
                     bp_input: handle_input, bp_shown: handle_shown}
 

@@ -82,13 +82,6 @@ except ImportError:
 PWD_ENTRY_SIZE = 48  # char name[16] + char password[32], Inc/app/password_table.h
 DIM = "grey50"
 
-# name, offset, size - matches partition_header_t in Inc/app/partition_store.h
-HEADER_FIELDS = [
-    ("magic", 0, 4), ("version", 4, 4), ("kdf_iter", 8, 4),
-    ("salt", 12, 16), ("auth", 28, 32), ("iv", 60, 16),
-    ("tag", 76, 32), ("crc32", 108, 4),
-]
-
 console = Console()
 
 
@@ -124,13 +117,6 @@ def read_persistent(session, state):
 
     entry_base = active_addr + LAYOUT["header_len"]
     state["entry0"] = session.read_bytes(hex(entry_base), PWD_ENTRY_SIZE)
-
-
-def parse_header(raw_bytes):
-    magic, version, _kdf_iter, _salt, _auth, _iv, tag, _crc32 = struct.unpack(
-        "<3I16s32s16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version,
-            "tag": bytes(tag), "raw": bytes(raw_bytes)}
 
 
 def diff_hex(a, b):
@@ -178,7 +164,7 @@ def panel_computed(state):
         t.add_row("auth = HMAC(k, 'auth-v1')", hexstr(state["auth_computed"]))
         t.add_row("enc = HMAC(k, 'enc-v1')", hexstr(state["enc"]))
     return Panel(t, title="[b]Key derivation[/b]", title_align="left",
-                 subtitle="Kdf_DeriveKeys, kdf.c:71", subtitle_align="left",
+                 subtitle="Kdf_DeriveKeys, kdf.c:78", subtitle_align="left",
                  border_style=border)
 
 
@@ -202,7 +188,7 @@ def panel_compared(state):
         t.add_row("verdict", badge)
         t.add_row("result", state["result"])
     return Panel(t, title="[b]Verification[/b]", title_align="left",
-                 subtitle="session.c:136", subtitle_align="left", border_style=border)
+                 subtitle="session.c:161", subtitle_align="left", border_style=border)
 
 
 def panel_session(state):
@@ -269,7 +255,7 @@ def panel_header_table(state):
         active = state["flash_b"] if state["active_sector"] == 3 else state["flash_a"]
         raw = active["raw"]
         base = state["active_addr"]
-        for name, offset, size in HEADER_FIELDS:
+        for name, offset, size in LAYOUT["fields"]:
             value = raw[offset:offset + size]
             t.add_row(name, f"0x{base + offset:08x}", f"{size}B", hexstr(value))
         subtitle = f"active partition, sector {state['active_sector']}, bytes 0-111"
@@ -367,10 +353,10 @@ def main():
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
 
         bp1 = session.set_checked_breakpoint_by_func("Session_Authenticate")
-        bp2 = session.set_checked_breakpoint_by_line("kdf.c", 71)
+        bp2 = session.set_checked_breakpoint_by_line("kdf.c", 78)
         session.cmd(f"condition {bp2} 'app.c'::g_state == APP_STATE_MK_AUTH")
-        bp3 = session.set_checked_breakpoint_by_line("session.c", 136)
-        bp4 = session.set_checked_breakpoint_by_line("app.c", 149)
+        bp3 = session.set_checked_breakpoint_by_line("session.c", 161)
+        bp4 = session.set_checked_breakpoint_by_line("app.c", 167)
         handlers = {bp1: handle_bp1, bp2: handle_bp2, bp3: handle_bp3, bp4: handle_bp4}
 
         print("\nAll breakpoints verified against the loaded ELF.")

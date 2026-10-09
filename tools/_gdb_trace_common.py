@@ -15,6 +15,7 @@ import glob
 import os
 import re
 import shutil
+import struct
 import sys
 import time
 from pathlib import Path
@@ -29,9 +30,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ELF = REPO_ROOT / "Debug" / "runeit.elf"
 PARTITION_A_ADDR = 0x08008000
 PARTITION_B_ADDR = 0x0800C000
-PARTITION_HEADER_LEN = 112
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-PARTITION_MAGIC = 0x52554E33
+PARTITION_STORE_H = REPO_ROOT / "Inc" / "app" / "partition_store.h"
+ERASED_WORD = 0xFFFFFFFF
+# partition_header_t fields, in order. Offsets and sizes are not written here:
+# load_partition_layout() asks gdb for them, so they always match the ELF.
+HEADER_FIELD_NAMES = ("magic", "version", "kdf_iter", "salt", "auth", "iv", "tag", "crc32")
+# Filled in by load_partition_layout(), called from GdbSession.connect().
+# A dict, not plain constants, so tools that imported it see the values.
+#   header_len : sizeof(partition_header_t)
+#   magic      : PARTITION_MAGIC from partition_store.h
+#   a_addr/b_addr : PARTITION_A_ADDR / PARTITION_B_ADDR
+#   fields     : [(name, offset, size), ...] in HEADER_FIELD_NAMES order
+LAYOUT = {"header_len": None, "magic": None, "a_addr": None, "b_addr": None, "fields": None}
 
 
 def die(message):
@@ -62,16 +73,81 @@ def locate_gdb(explicit):
         "for arm-none-eabi-gcc).")
 
 
-def parse_flash_header(raw_bytes):
-    magic, version, kdf_iter, salt, auth, iv, tag, crc32 = struct.unpack(
-        "<3I16s32s16s32sI", bytes(raw_bytes))
-    valid = "valid" if magic == PARTITION_MAGIC else "UNRECOGNISED"
-    return (f"magic=0x{magic:08x} ({valid}) version={version} kdf_iter={kdf_iter} "
-            f"crc32=0x{crc32:08x}\n"
-            f"      salt={hexstr(salt)}\n"
-            f"      auth={hexstr(auth)}\n"
-            f"      iv={hexstr(iv)}\n"
-            f"      tag={hexstr(tag)}")
+def read_header_define(name):
+    """Integer value of a #define in Inc/app/partition_store.h."""
+    text = PARTITION_STORE_H.read_text()
+    m = re.search(r"^\s*#define\s+" + name + r"\s+(0[xX][0-9A-Fa-f]+|\d+)", text, re.M)
+    if not m:
+        die(f"could not find #define {name} in {PARTITION_STORE_H}")
+    return int(m.group(1), 0)
+
+
+def load_partition_layout(session):
+    """The header layout comes from the ELF being debugged, so it always
+    matches the flashed firmware (64 bytes before the AES change, 112 after)."""
+    LAYOUT["header_len"] = int(session.read_value("sizeof(partition_header_t)"))
+    LAYOUT["magic"] = read_header_define("PARTITION_MAGIC")
+    LAYOUT["a_addr"] = read_header_define("PARTITION_A_ADDR")
+    LAYOUT["b_addr"] = read_header_define("PARTITION_B_ADDR")
+    fields = []
+    for name in HEADER_FIELD_NAMES:
+        offset = session.read_int(f"(unsigned)&((partition_header_t *)0)->{name}")
+        size = int(session.read_value(f"sizeof(((partition_header_t *)0)->{name})"))
+        fields.append((name, offset, size))
+    LAYOUT["fields"] = fields
+
+
+def split_header(raw_bytes):
+    """{field name: bytes} for one raw header, using LAYOUT["fields"]."""
+    raw = bytes(raw_bytes)
+    return {name: raw[offset:offset + size] for name, offset, size in LAYOUT["fields"]}
+
+
+def header_word(fields, name):
+    return struct.unpack("<I", fields[name])[0]
+
+
+def read_partition_header(session, addr):
+    """One flash read of the whole header at addr. Returns valid/status
+    ("valid", "empty" or "INVALID"), version, iv, tag and the raw bytes."""
+    raw = bytes(session.read_bytes(hex(addr), LAYOUT["header_len"]))
+    fields = split_header(raw)
+    magic = header_word(fields, "magic")
+    if magic == LAYOUT["magic"]:
+        status = "valid"
+    elif magic == ERASED_WORD:
+        status = "empty"
+    else:
+        status = "INVALID"
+    return {"valid": status == "valid", "status": status, "magic": magic,
+            "version": header_word(fields, "version"),
+            "iv": fields["iv"], "tag": fields["tag"], "raw": raw}
+
+
+def read_partition_crc_ok(session, addr):
+    """Runs the firmware's own boot CRC check (ValidateCrc) on the partition at
+    addr: True/False, or None if gdb could not call it. Magic alone says
+    nothing about a half-written table; this is the check boot really uses.
+    Only call it while the firmware is not using the CRC unit itself."""
+    try:
+        out = session.read_value(
+            f"(int)'partition_store.c'::ValidateCrc({addr:#x}, (const partition_header_t *){addr:#x})")
+        return int(out) != 0
+    except (RuntimeError, ValueError):
+        return None
+
+
+def describe_flash_header(session, addr):
+    """Multi-line text form of the header at addr, for the plain-text tools."""
+    info = read_partition_header(session, addr)
+    fields = split_header(info["raw"])
+    return (f"magic=0x{info['magic']:08x} ({info['status']}) version={info['version']} "
+            f"kdf_iter={header_word(fields, 'kdf_iter')} "
+            f"crc32=0x{header_word(fields, 'crc32'):08x}\n"
+            f"      salt={hexstr(fields['salt'])}\n"
+            f"      auth={hexstr(fields['auth'])}\n"
+            f"      iv={hexstr(fields['iv'])}\n"
+            f"      tag={hexstr(fields['tag'])}")
 
 
 def banner(step, title):

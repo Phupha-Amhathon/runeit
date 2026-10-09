@@ -4,22 +4,22 @@
 A blank device has no partition and no old key, so this run is simpler than
 the other modes: one key, derived once, committed once. What it shows, one
 pause per step:
-  1. The first and confirm entries are compared (mode_first_meet.c:62).
+  1. The first and confirm entries are compared (mode_first_meet.c:63).
   2. The fresh salt, iterations, the intermediate k, and auth/enc are
-     derived (kdf.c:71). k is discarded right after this step.
+     derived (kdf.c:78). k is discarded right after this step.
   3. The first-ever partition is committed to sector 2 / A, version 1
-     (session.c:170). The header and the table are read fresh from flash
+     (session.c:202). The header and the table are read fresh from flash
      both before and after this step, so the panels show whatever was
      physically on the sector (erased, or left over from an earlier test)
      until the commit actually lands.
-  4. The mode returns to the menu (app.c:117, which steps once more to
+  4. The mode returns to the menu (app.c:153, which steps once more to
      show g_state after the transition).
 
 Breakpoints (4, under the 6-comparator ceiling measured on this board):
-  - mode_first_meet.c:62   confirm entry compared.
-  - kdf.c:71               auth and enc both derived.
-  - session.c:170          first-ever partition committed, session opened.
-  - app.c:117              mode returned to MODE_SELECTION.
+  - mode_first_meet.c:63   confirm entry compared.
+  - kdf.c:78               auth and enc both derived.
+  - session.c:202          first-ever partition committed, session opened.
+  - app.c:153              mode returned to MODE_SELECTION.
 
 Precondition: a BLANK device. No valid partition in either sector. If the
 device already has one, erase sectors 2 and 3 first (see TESTING.md) or
@@ -37,15 +37,14 @@ Requires: pip install pexpect rich
 """
 import os
 import re
-import struct
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, PARTITION_A_ADDR, PARTITION_B_ADDR, PARTITION_HEADER_LEN,
-    PARTITION_MAGIC, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, PARTITION_A_ADDR, PARTITION_B_ADDR,
+    build_arg_parser, die, hexstr, locate_gdb, pace, read_partition_header,
 )
 
 try:
@@ -62,13 +61,6 @@ WINDOW_SIZE = 4
 ENC_KEY_LEN = 32
 FAST_DELAY_S = 0.2
 DIM = "grey50"
-
-# name, offset, size - matches partition_header_t in Inc/app/partition_store.h
-HEADER_FIELDS = [
-    ("magic", 0, 4), ("version", 4, 4), ("kdf_iter", 8, 4),
-    ("salt", 12, 16), ("auth", 28, 32), ("iv", 60, 16),
-    ("tag", 76, 32), ("crc32", 108, 4),
-]
 
 console = Console()
 
@@ -87,12 +79,6 @@ def fresh_state():
     }
 
 
-def parse_header(raw_bytes):
-    magic, version, _kdf_iter, _salt, _auth, _iv, _tag, _crc32 = struct.unpack(
-        "<3I16s32s16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
-
-
 def decode_c_string(raw):
     return bytes(raw).split(b"\x00", 1)[0].decode("ascii", errors="replace")
 
@@ -105,12 +91,12 @@ def read_session(session, state):
 
 def read_flash(session, state):
     """Real memory, read fresh every pause - valid or not, written or not."""
-    state["header_raw"] = bytes(session.read_bytes(hex(PARTITION_A_ADDR), PARTITION_HEADER_LEN))
-    state["flash_a"] = parse_header(state["header_raw"])
-    state["flash_b"] = parse_header(session.read_bytes(hex(PARTITION_B_ADDR), PARTITION_HEADER_LEN))
+    state["flash_a"] = read_partition_header(session, PARTITION_A_ADDR)
+    state["flash_b"] = read_partition_header(session, PARTITION_B_ADDR)
+    state["header_raw"] = state["flash_a"]["raw"]
 
     raw_table = bytes(session.read_bytes(
-        hex(PARTITION_A_ADDR + PARTITION_HEADER_LEN), WINDOW_SIZE * PWD_ENTRY_SIZE))
+        hex(PARTITION_A_ADDR + LAYOUT["header_len"]), WINDOW_SIZE * PWD_ENTRY_SIZE))
     state["entries"] = [raw_table[i * PWD_ENTRY_SIZE:(i + 1) * PWD_ENTRY_SIZE]
                         for i in range(WINDOW_SIZE)]
 
@@ -134,7 +120,7 @@ def panel_input(state):
                   else Text("MISMATCH", style="bold red"))
     border = "cyan" if state["step"] == "confirmed" else "grey37"
     return Panel(t, title="[b]Input[/b]", title_align="left",
-                 subtitle="mode_first_meet.c:62", subtitle_align="left", border_style=border)
+                 subtitle="mode_first_meet.c:63", subtitle_align="left", border_style=border)
 
 
 def panel_flash_compact(state):
@@ -170,7 +156,7 @@ def panel_derive(state):
         t.add_row("enc (RAM only)", Text(hexstr(state["enc"]), style="yellow", overflow="fold"))
     border = "yellow" if state["step"] in ("derived", "committed", "transitioned") else "grey37"
     return Panel(t, title="[b]Key derivation[/b]", title_align="left",
-                 subtitle="kdf.c:71", subtitle_align="left", border_style=border)
+                 subtitle="kdf.c:78", subtitle_align="left", border_style=border)
 
 
 def panel_session(state):
@@ -204,7 +190,7 @@ def panel_header_table(state):
     if raw is None:
         t.add_row("—", "—", "—", Text("—", style=DIM))
     else:
-        for name, offset, size in HEADER_FIELDS:
+        for name, offset, size in LAYOUT["fields"]:
             value = raw[offset:offset + size]
             style = "green" if written else "grey50"
             t.add_row(name, f"0x{PARTITION_A_ADDR + offset:08x}", f"{size}B",
@@ -225,7 +211,7 @@ def panel_entries(state):
     if state["entries"] is None:
         t.add_row("—", "—", Text("—", style=DIM))
     else:
-        base = PARTITION_A_ADDR + PARTITION_HEADER_LEN
+        base = PARTITION_A_ADDR + LAYOUT["header_len"]
         for i, chunk in enumerate(state["entries"]):
             style = "green" if written else "grey50"
             t.add_row(str(i), f"0x{base + i * PWD_ENTRY_SIZE:08x}", Text(hexstr(chunk), style=style))
@@ -327,10 +313,10 @@ def main():
         session.connect(args.host, args.port)
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
 
-        bp_confirm = session.set_checked_breakpoint_by_line("mode_first_meet.c", 62)
-        bp_derived = session.set_checked_breakpoint_by_line("kdf.c", 71)
-        bp_committed = session.set_checked_breakpoint_by_line("session.c", 170)
-        bp_transition = session.set_checked_breakpoint_by_line("app.c", 117)
+        bp_confirm = session.set_checked_breakpoint_by_line("mode_first_meet.c", 63)
+        bp_derived = session.set_checked_breakpoint_by_line("kdf.c", 78)
+        bp_committed = session.set_checked_breakpoint_by_line("session.c", 202)
+        bp_transition = session.set_checked_breakpoint_by_line("app.c", 153)
         handlers = {bp_confirm: handle_confirm, bp_derived: handle_derived,
                     bp_committed: handle_committed, bp_transition: handle_transition}
 

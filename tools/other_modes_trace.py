@@ -133,12 +133,12 @@ def first_meet_bp4(session, auto_mode):
 
 
 def setup_first_meet(session):
-    bp1 = session.set_checked_breakpoint_by_line("mode_first_meet.c", 62)
-    bp2 = session.set_checked_breakpoint_by_line("kdf.c", 71)
+    bp1 = session.set_checked_breakpoint_by_line("mode_first_meet.c", 63)
+    bp2 = session.set_checked_breakpoint_by_line("kdf.c", 78)
     session.cmd(f"condition {bp2} 'app.c'::g_state == APP_STATE_FIRST_MEET")
-    bp3 = session.set_checked_breakpoint_by_line("session.c", 170)
+    bp3 = session.set_checked_breakpoint_by_line("session.c", 202)
     session.cmd(f"condition {bp3} 'app.c'::g_state == APP_STATE_FIRST_MEET")
-    bp4 = session.set_checked_breakpoint_by_line("app.c", 139)
+    bp4 = session.set_checked_breakpoint_by_line("app.c", 153)
     print("Type a master key twice at the board's '== FIRST TIME SETUP ==' serial")
     print("prompt to begin.")
     handlers = {bp1: first_meet_bp1, bp2: first_meet_bp2,
@@ -223,13 +223,13 @@ def change_mk_bp5(session, auto_mode):
 
 
 def setup_change_mk(session):
-    bp1 = session.set_checked_breakpoint_by_line("mode_change_mk.c", 85)
+    bp1 = session.set_checked_breakpoint_by_line("mode_change_mk.c", 87)
     bp2 = session.set_checked_breakpoint_by_line("mode_change_mk.c", 66)
-    bp3 = session.set_checked_breakpoint_by_line("kdf.c", 71)
+    bp3 = session.set_checked_breakpoint_by_line("kdf.c", 78)
     session.cmd(f"condition {bp3} 'app.c'::g_state == APP_STATE_CHANGE_MK_MODE")
-    bp4 = session.set_checked_breakpoint_by_line("session.c", 170)
+    bp4 = session.set_checked_breakpoint_by_line("session.c", 202)
     session.cmd(f"condition {bp4} 'app.c'::g_state == APP_STATE_CHANGE_MK_MODE")
-    bp5 = session.set_checked_breakpoint_by_line("app.c", 187)
+    bp5 = session.set_checked_breakpoint_by_line("app.c", 211)
     print("Log in first over the serial terminal, choose 'Change master key' from")
     print("the menu, then type the new key twice to begin.")
     handlers = {bp1: change_mk_bp1, bp2: change_mk_bp2, bp3: change_mk_bp3,
@@ -308,8 +308,8 @@ def retrieve_bp3(session, auto_mode):
 
 def setup_retrieve(session):
     bp1 = session.set_checked_breakpoint_by_func("Mode_Retrieve_Enter")
-    bp2 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 28)
-    bp3 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 78)
+    bp2 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 34)
+    bp3 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 88)
     print("Log in first over the serial terminal, then choose 'Retrieve password'")
     print("from the menu to begin. If there's no open session, Mode_Retrieve_Enter")
     print("fails before block [2] or [3] can fire - seeing only block [1] in that")
@@ -384,9 +384,9 @@ def generate_bp3(session, auto_mode):
 
 
 def setup_generate(session):
-    bp1 = session.set_checked_breakpoint_by_line("mode_generate.c", 333)
-    bp2 = session.set_checked_breakpoint_by_line("mode_generate.c", 349)
-    bp3 = session.set_checked_breakpoint_by_line("mode_generate.c", 387)
+    bp1 = session.set_checked_breakpoint_by_line("mode_generate.c", 370)
+    bp2 = session.set_checked_breakpoint_by_line("mode_generate.c", 386)
+    bp3 = session.set_checked_breakpoint_by_line("mode_generate.c", 424)
     print("Log in over the serial terminal, choose 'Generate password', and answer")
     print("the id/name/class/length prompts first - see other_modes_trace.md. Once")
     print("sampling starts, round 1 pauses for narration, later rounds scroll by.")

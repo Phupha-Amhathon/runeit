@@ -16,9 +16,9 @@ What's new in draft 2:
 
 Breakpoints (4, under the 6-hardware-comparator ceiling measured on this
 board):
-  - mode_generate.c:333, :349  Entropy_Pool_Absorb() for temp/light ADC.
-  - mode_generate.c:187        the accept/reject check inside ProduceChars().
-  - mode_generate.c:387        Session_Save() - the commit.
+  - mode_generate.c:370, :386  Entropy_Pool_Absorb() for temp/light ADC.
+  - mode_generate.c:216        the accept/reject check inside ProduceChars().
+  - mode_generate.c:424        Session_Save() - the commit.
 
 Pacing: the first sampling round, the first byte-to-character mapping, and
 both save moments pause for Enter. Later repeats of the sampling and mapping
@@ -191,7 +191,7 @@ def panel_mapping(state):
     group = Group(t, Text("values ≥ the cutoff are discarded so every character stays equally likely",
                            style=f"italic {DIM}"))
     return Panel(group, title="[b]Character mapping[/b]", title_align="left",
-                 subtitle="ProduceChars, mode_generate.c:187", subtitle_align="left",
+                 subtitle="ProduceChars, mode_generate.c:216", subtitle_align="left",
                  border_style=border)
 
 
@@ -220,7 +220,7 @@ def panel_save(state):
     group = Group(t, Text("run generate then retrieve_trace afterward to see this decrypt "
                            "back to the same password", style=f"italic {DIM}"))
     return Panel(group, title="[b]Save[/b]", title_align="left",
-                 subtitle="SaveEntry, mode_generate.c:387", subtitle_align="left",
+                 subtitle="SaveEntry, mode_generate.c:424", subtitle_align="left",
                  border_style=border)
 
 
@@ -346,11 +346,11 @@ def handle_absorb(session, state, auto_mode, channel, loc):
 
 
 def handle_temp(session, state, auto_mode):
-    handle_absorb(session, state, auto_mode, "temp", "mode_generate.c:333")
+    handle_absorb(session, state, auto_mode, "temp", "mode_generate.c:370")
 
 
 def handle_light(session, state, auto_mode):
-    handle_absorb(session, state, auto_mode, "light", "mode_generate.c:349")
+    handle_absorb(session, state, auto_mode, "light", "mode_generate.c:386")
 
 
 def read_draw_bits(session):
@@ -441,10 +441,10 @@ def main():
         print(f"Partition header: {LAYOUT['header_len']} bytes, magic 0x{LAYOUT['magic']:08x} "
               f"(from the ELF and Inc/app/partition_store.h).")
 
-        bp_temp = session.set_checked_breakpoint_by_line("mode_generate.c", 333)
-        bp_light = session.set_checked_breakpoint_by_line("mode_generate.c", 349)
-        bp_mapping = session.set_checked_breakpoint_by_line("mode_generate.c", 187)
-        bp_save = session.set_checked_breakpoint_by_line("mode_generate.c", 387)
+        bp_temp = session.set_checked_breakpoint_by_line("mode_generate.c", 370)
+        bp_light = session.set_checked_breakpoint_by_line("mode_generate.c", 386)
+        bp_mapping = session.set_checked_breakpoint_by_line("mode_generate.c", 216)
+        bp_save = session.set_checked_breakpoint_by_line("mode_generate.c", 424)
         handlers = {bp_temp: handle_temp, bp_light: handle_light,
                     bp_mapping: handle_mapping, bp_save: handle_save}
 
