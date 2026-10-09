@@ -32,7 +32,7 @@ prior FIRST_MEET (serial should show "== LOCKED ==" on reset, not
 
 This never decrypts the password table - Session_Authenticate only
 authenticates, it never calls Session_LoadTable (that only happens later,
-inside RETRIEVE_MODE/GENERATE_MODE). The "entry 0/1 (cipher)" panel below
+inside RETRIEVE_MODE/GENERATE_MODE). The "entry 0 (cipher)" row below
 is therefore always ciphertext, even right after a correct login - that is
 deliberate, and is itself the point: it shows the data is unreadable at
 rest regardless of whether the login just succeeded. For a plaintext
@@ -61,14 +61,13 @@ Requires: pip install pexpect rich
 """
 import os
 import re
-import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, PARTITION_A_ADDR, PARTITION_B_ADDR, PARTITION_HEADER_LEN,
-    PARTITION_MAGIC, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, PARTITION_A_ADDR, PARTITION_B_ADDR,
+    build_arg_parser, die, hexstr, locate_gdb, pace, read_partition_header,
 )
 
 try:
@@ -111,21 +110,13 @@ def read_persistent(session, state):
     active_addr = session.read_int("'partition_store.c'::s_active.addr")
     active_sector = session.read_value("'partition_store.c'::s_active.sector")
 
-    flash_a_raw = session.read_bytes(hex(PARTITION_A_ADDR), PARTITION_HEADER_LEN)
-    flash_b_raw = session.read_bytes(hex(PARTITION_B_ADDR), PARTITION_HEADER_LEN)
-    state["flash_a"] = parse_header(flash_a_raw)
-    state["flash_b"] = parse_header(flash_b_raw)
+    state["flash_a"] = read_partition_header(session, PARTITION_A_ADDR)
+    state["flash_b"] = read_partition_header(session, PARTITION_B_ADDR)
     state["active_sector"] = active_sector
     state["active_addr"] = active_addr
 
-    entry_base = active_addr + PARTITION_HEADER_LEN
+    entry_base = active_addr + LAYOUT["header_len"]
     state["entry0"] = session.read_bytes(hex(entry_base), PWD_ENTRY_SIZE)
-    state["entry1"] = session.read_bytes(hex(entry_base + PWD_ENTRY_SIZE), PWD_ENTRY_SIZE)
-
-
-def parse_header(raw_bytes):
-    magic, version, kdf_iter, salt, auth, crc32 = struct.unpack("<3I16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
 
 
 def diff_hex(a, b):
@@ -173,7 +164,7 @@ def panel_computed(state):
         t.add_row("auth = HMAC(k, 'auth-v1')", hexstr(state["auth_computed"]))
         t.add_row("enc = HMAC(k, 'enc-v1')", hexstr(state["enc"]))
     return Panel(t, title="[b]Key derivation[/b]", title_align="left",
-                 subtitle="Kdf_DeriveKeys, kdf.c:71", subtitle_align="left",
+                 subtitle="Kdf_DeriveKeys, kdf.c:78", subtitle_align="left",
                  border_style=border)
 
 
@@ -197,7 +188,7 @@ def panel_compared(state):
         t.add_row("verdict", badge)
         t.add_row("result", state["result"])
     return Panel(t, title="[b]Verification[/b]", title_align="left",
-                 subtitle="session.c:136", subtitle_align="left", border_style=border)
+                 subtitle="session.c:161", subtitle_align="left", border_style=border)
 
 
 def panel_session(state):
@@ -236,29 +227,58 @@ def panel_flash(state):
     else:
         t.add_row("active", f"sector {state['active_sector']} @ 0x{state['active_addr']:08x}")
         t.add_row("A (0x08008000)",
-                   f"{'valid' if a['valid'] else 'INVALID'} · version {a['version']}")
+                   f"{a['status']} · version {a['version']}")
         t.add_row("B (0x0800c000)",
                    f"{'valid' if b['valid'] else 'INVALID'} · version {b['version']}")
+        t.add_row("tag A (first 8)", hexstr(a["tag"][:8]) + " ...")
+        t.add_row("tag B (first 8)", hexstr(b["tag"][:8]) + " ...")
         t.add_row("", "")
         t.add_row("entry 0 (cipher)", hexstr(state["entry0"]))
-        t.add_row("entry 1 (cipher)", hexstr(state["entry1"]))
-    group = Group(t, Text("ciphertext — unreadable without the session key, even right now",
+    group = Group(t, Text("ciphertext — unreadable without the session key, even right now. "
+                           "the tag is checked before any decrypt, in RETRIEVE/GENERATE, not here.",
                            style=f"italic {DIM}"))
     return Panel(group, title="[b]Flash partitions[/b]", title_align="left",
                  subtitle="live, every pause", subtitle_align="left", border_style="grey37")
 
 
+def panel_header_table(state):
+    t = Table(box=None, show_header=True, header_style=DIM, padding=(0, 1), expand=True)
+    t.add_column("field", style=DIM)
+    t.add_column("start address", style=DIM, no_wrap=True)
+    t.add_column("size", style=DIM, no_wrap=True)
+    t.add_column("value", overflow="fold")
+    a = state.get("flash_a")
+    if a is None:
+        t.add_row("—", "—", "—", Text("—", style=DIM))
+        subtitle = "waiting for the first attempt"
+    else:
+        active = state["flash_b"] if state["active_sector"] == 3 else state["flash_a"]
+        raw = active["raw"]
+        base = state["active_addr"]
+        for name, offset, size in LAYOUT["fields"]:
+            value = raw[offset:offset + size]
+            t.add_row(name, f"0x{base + offset:08x}", f"{size}B", hexstr(value))
+        subtitle = f"active partition, sector {state['active_sector']}, bytes 0-111"
+    group = Group(t, Text("nothing is written during login, so this never changes across steps",
+                          style=f"italic {DIM}"))
+    return Panel(group, title="[b]Header on flash[/b]", title_align="left",
+                 subtitle=subtitle, subtitle_align="left", border_style="grey37")
+
+
 def render(state):
     grid = Table.grid(expand=True, padding=(0, 1))
-    grid.add_column(ratio=3)
-    grid.add_column(ratio=2)
-    left = Group(panel_typed(state), panel_computed(state), panel_compared(state))
-    right = Group(panel_session(state), panel_flash(state))
-    grid.add_row(left, right)
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1.2)
+    grid.add_column(ratio=1)
+    col1 = Group(panel_typed(state), panel_compared(state))
+    col2 = Group(panel_computed(state))
+    col3 = Group(panel_session(state), panel_flash(state))
+    grid.add_row(col1, col2, col3)
     console.clear()
     console.print(Text("mk_auth_trace (tui)", style="bold"),
                   Text(" — live login pipeline, draft 1", style=DIM))
     console.print(grid)
+    console.print(panel_header_table(state))
 
 
 def handle_bp1(session, state):
@@ -333,10 +353,10 @@ def main():
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
 
         bp1 = session.set_checked_breakpoint_by_func("Session_Authenticate")
-        bp2 = session.set_checked_breakpoint_by_line("kdf.c", 71)
+        bp2 = session.set_checked_breakpoint_by_line("kdf.c", 78)
         session.cmd(f"condition {bp2} 'app.c'::g_state == APP_STATE_MK_AUTH")
-        bp3 = session.set_checked_breakpoint_by_line("session.c", 136)
-        bp4 = session.set_checked_breakpoint_by_line("app.c", 127)
+        bp3 = session.set_checked_breakpoint_by_line("session.c", 161)
+        bp4 = session.set_checked_breakpoint_by_line("app.c", 167)
         handlers = {bp1: handle_bp1, bp2: handle_bp2, bp3: handle_bp3, bp4: handle_bp4}
 
         print("\nAll breakpoints verified against the loaded ELF.")

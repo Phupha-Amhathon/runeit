@@ -30,4 +30,7 @@ mode_status_t Mode_Generate_Run(void);
  *  save that has not started yet (used by the panic-button handler). */
 void Mode_Generate_Wipe(void);
 
+/** True while the ADC is collecting noise, so the LEDs can stay dark. */
+bool Mode_Generate_IsSampling(void);
+
 #endif /* MODE_GENERATE_H */

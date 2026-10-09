@@ -16,9 +16,9 @@ What's new in draft 2:
 
 Breakpoints (4, under the 6-hardware-comparator ceiling measured on this
 board):
-  - mode_generate.c:333, :349  Entropy_Pool_Absorb() for temp/light ADC.
-  - mode_generate.c:187        the accept/reject check inside ProduceChars().
-  - mode_generate.c:387        Session_Save() - the commit.
+  - mode_generate.c:370, :386  Entropy_Pool_Absorb() for temp/light ADC.
+  - mode_generate.c:216        the accept/reject check inside ProduceChars().
+  - mode_generate.c:424        Session_Save() - the commit.
 
 Pacing: the first sampling round, the first byte-to-character mapping, and
 both save moments pause for Enter. Later repeats of the sampling and mapping
@@ -50,16 +50,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, build_arg_parser, die, hexstr, locate_gdb, pace,
+    read_partition_header,
 )
-
-PARTITION_STORE_H = Path(__file__).resolve().parent.parent / "Inc" / "app" / "partition_store.h"
-
-# Partition layout, taken from the firmware rather than copied here: the
-# header size from the ELF, magic and A/B addresses from partition_store.h.
-# Filled in by load_partition_layout() once gdb is connected.
-LAYOUT = {"header_len": None, "magic": None, "a_addr": None, "b_addr": None}
-ERASED_WORD = 0xFFFFFFFF
 
 try:
     from rich.console import Console, Group
@@ -98,39 +91,6 @@ def fresh_state():
         "flash_a": None, "flash_b": None,
         "entries": None,          # raw bytes of the first ENTRY_COUNT_SHOWN entries, active partition
     }
-
-
-def read_header_define(name):
-    """Integer value of a #define in Inc/app/partition_store.h."""
-    text = PARTITION_STORE_H.read_text()
-    m = re.search(r"^\s*#define\s+" + name + r"\s+(0[xX][0-9A-Fa-f]+|\d+)", text, re.M)
-    if not m:
-        die(f"could not find #define {name} in {PARTITION_STORE_H}")
-    return int(m.group(1), 0)
-
-
-def load_partition_layout(session):
-    """Header size comes from the ELF being debugged, so it always matches
-    the flashed firmware (64 bytes before the AES change, 112 after)."""
-    LAYOUT["header_len"] = int(session.read_value("sizeof(partition_header_t)"))
-    LAYOUT["magic"] = read_header_define("PARTITION_MAGIC")
-    LAYOUT["a_addr"] = read_header_define("PARTITION_A_ADDR")
-    LAYOUT["b_addr"] = read_header_define("PARTITION_B_ADDR")
-
-
-def read_partition_header(session, addr):
-    """Reads magic and version through the firmware's own struct type, so a
-    change in the header layout cannot shift these fields."""
-    hdr = f"((partition_header_t *){addr:#x})"
-    magic = session.read_int(f"{hdr}->magic")
-    version = session.read_int(f"{hdr}->version")
-    if magic == LAYOUT["magic"]:
-        status = "valid"
-    elif magic == ERASED_WORD:
-        status = "empty"
-    else:
-        status = "INVALID"
-    return {"status": status, "version": version}
 
 
 def read_input(session, state):
@@ -231,7 +191,7 @@ def panel_mapping(state):
     group = Group(t, Text("values ≥ the cutoff are discarded so every character stays equally likely",
                            style=f"italic {DIM}"))
     return Panel(group, title="[b]Character mapping[/b]", title_align="left",
-                 subtitle="ProduceChars, mode_generate.c:187", subtitle_align="left",
+                 subtitle="ProduceChars, mode_generate.c:216", subtitle_align="left",
                  border_style=border)
 
 
@@ -260,7 +220,7 @@ def panel_save(state):
     group = Group(t, Text("run generate then retrieve_trace afterward to see this decrypt "
                            "back to the same password", style=f"italic {DIM}"))
     return Panel(group, title="[b]Save[/b]", title_align="left",
-                 subtitle="SaveEntry, mode_generate.c:387", subtitle_align="left",
+                 subtitle="SaveEntry, mode_generate.c:424", subtitle_align="left",
                  border_style=border)
 
 
@@ -386,11 +346,11 @@ def handle_absorb(session, state, auto_mode, channel, loc):
 
 
 def handle_temp(session, state, auto_mode):
-    handle_absorb(session, state, auto_mode, "temp", "mode_generate.c:333")
+    handle_absorb(session, state, auto_mode, "temp", "mode_generate.c:370")
 
 
 def handle_light(session, state, auto_mode):
-    handle_absorb(session, state, auto_mode, "light", "mode_generate.c:349")
+    handle_absorb(session, state, auto_mode, "light", "mode_generate.c:386")
 
 
 def read_draw_bits(session):
@@ -478,14 +438,13 @@ def main():
     try:
         session.connect(args.host, args.port)
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
-        load_partition_layout(session)
         print(f"Partition header: {LAYOUT['header_len']} bytes, magic 0x{LAYOUT['magic']:08x} "
               f"(from the ELF and Inc/app/partition_store.h).")
 
-        bp_temp = session.set_checked_breakpoint_by_line("mode_generate.c", 333)
-        bp_light = session.set_checked_breakpoint_by_line("mode_generate.c", 349)
-        bp_mapping = session.set_checked_breakpoint_by_line("mode_generate.c", 187)
-        bp_save = session.set_checked_breakpoint_by_line("mode_generate.c", 387)
+        bp_temp = session.set_checked_breakpoint_by_line("mode_generate.c", 370)
+        bp_light = session.set_checked_breakpoint_by_line("mode_generate.c", 386)
+        bp_mapping = session.set_checked_breakpoint_by_line("mode_generate.c", 216)
+        bp_save = session.set_checked_breakpoint_by_line("mode_generate.c", 424)
         handlers = {bp_temp: handle_temp, bp_light: handle_light,
                     bp_mapping: handle_mapping, bp_save: handle_save}
 

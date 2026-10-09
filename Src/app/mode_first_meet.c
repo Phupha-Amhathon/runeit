@@ -16,12 +16,13 @@ typedef enum {
 /* One extra byte so a 32+ character entry is seen (and rejected) instead of
  * being silently cut to a valid-looking 31. */
 #define LINE_CAP (MK_MAX_LEN + 2U)
+#define MSG_LEN  48U
 
 static fm_state_t s_sub = FM_PROMPT;
 static char s_first[MK_MAX_LEN + 1U];
 static size_t s_first_len = 0U;
 /* Must outlive the call: the UART DMA reads it after Send() returns. */
-static char s_msg[48];
+static char s_msg[MSG_LEN];
 
 static void Send(const char *text)
 {
@@ -101,6 +102,8 @@ mode_status_t Mode_FirstMeet_Run(void)
             len = USART_Drv_TakeLine(line, sizeof(line));
             OnFirstEntry(line, len);
             Secure_Zero(line, sizeof(line));
+        } else {
+            /* No action */
         }
         break;
 
@@ -109,6 +112,8 @@ mode_status_t Mode_FirstMeet_Run(void)
             len = USART_Drv_TakeLine(line, sizeof(line));
             status = OnConfirmEntry(line, len);
             Secure_Zero(line, sizeof(line));
+        } else {
+            /* No action */
         }
         break;
 

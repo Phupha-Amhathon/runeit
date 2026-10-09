@@ -4,6 +4,7 @@
 #include "secure_zero.h"
 
 #define KDF_CANCEL_POLL_MASK 31U
+#define KDF_BLOCK_INDEX_LEN  4U /* PBKDF2's 32-bit big-endian block number */
 
 static const uint8_t s_label_auth[] = "RUNEIT-auth-v1";
 static const uint8_t s_label_enc[]  = "RUNEIT-enc-v1";
@@ -16,29 +17,31 @@ bool Kdf_Pbkdf2Sha256(const uint8_t *password, size_t password_len,
     hmac_sha256_ctx_t hmac;
     uint8_t u[KDF_KEY_LEN];
     uint8_t t[KDF_KEY_LEN];
-    uint8_t first[KDF_SALT_LEN + 4U];
+    uint8_t first[KDF_SALT_LEN + KDF_BLOCK_INDEX_LEN];
     bool ok = true;
     uint32_t i;
     uint32_t j;
 
     if (salt_len > KDF_SALT_LEN) {
         return false;
+    } else {
+        /* No action */
     }
 
     HmacSha256_Init(&hmac, password, password_len);
 
     (void)memcpy(first, salt, salt_len);
-    first[salt_len]      = 0U;
-    first[salt_len + 1U] = 0U;
-    first[salt_len + 2U] = 0U;
-    first[salt_len + 3U] = 1U; /* block index 1, big endian */
-    HmacSha256_Compute(&hmac, first, salt_len + 4U, u);
+    (void)memset(&first[salt_len], 0, KDF_BLOCK_INDEX_LEN);
+    first[(salt_len + KDF_BLOCK_INDEX_LEN) - 1U] = 1U; /* block index 1, big endian */
+    HmacSha256_Compute(&hmac, first, salt_len + KDF_BLOCK_INDEX_LEN, u);
     (void)memcpy(t, u, sizeof(t));
 
     for (i = 1U; i < iterations; i++) {
         if ((cancel != NULL) && ((i & KDF_CANCEL_POLL_MASK) == 0U) && cancel()) {
             ok = false;
             break;
+        } else {
+            /* No action */
         }
         HmacSha256_Compute(&hmac, u, sizeof(u), u);
         for (j = 0U; j < KDF_KEY_LEN; j++) {
@@ -48,6 +51,8 @@ bool Kdf_Pbkdf2Sha256(const uint8_t *password, size_t password_len,
 
     if (ok) {
         (void)memcpy(out, t, KDF_KEY_LEN);
+    } else {
+        /* No action */
     }
 
     Secure_Zero(&hmac, sizeof(hmac));
@@ -65,6 +70,8 @@ bool Kdf_DeriveKeys(const uint8_t *mk, size_t mk_len,
 
     if (!Kdf_Pbkdf2Sha256(mk, mk_len, salt, KDF_SALT_LEN, iterations, cancel, k)) {
         return false;
+    } else {
+        /* No action */
     }
     HmacSha256(k, sizeof(k), s_label_auth, sizeof(s_label_auth) - 1U, auth);
     HmacSha256(k, sizeof(k), s_label_enc, sizeof(s_label_enc) - 1U, enc);

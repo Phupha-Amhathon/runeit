@@ -4,6 +4,7 @@
 #include "app_types.h"
 #include "usart_drv.h"
 #include "exti_drv.h"
+#include "status_led.h"
 #include "partition_store.h"
 #include "password_table.h"
 #include "session.h"
@@ -12,6 +13,8 @@
 #include "mode_retrieve.h"
 #include "mode_change_mk.h"
 #include "mode_generate.h"
+
+#define MENU_LINE_LEN 8U
 
 static volatile app_state_t g_state = APP_STATE_INIT;
 
@@ -28,6 +31,7 @@ static const char s_menu_text[] =
 static void App_PanicHandler(void)
 {
     Session_Wipe();
+    Status_Led_Off();
     Mode_Retrieve_Wipe();
     Mode_FirstMeet_Wipe();
     Mode_MkAuth_Wipe();
@@ -40,6 +44,7 @@ static void App_PanicHandler(void)
 
 void App_Init(void)
 {
+    Status_Led_Init();
     EXTI_Drv_SetPanicCallback(App_PanicHandler);
 }
 
@@ -52,18 +57,26 @@ static void SendMenu(void)
 static void HandleInit(void)
 {
     Partition_Store_Init();
-    g_state = (Partition_Store_Active() == NULL) ? APP_STATE_FIRST_MEET : APP_STATE_MK_AUTH;
+    if (Partition_Store_Active() == NULL) {
+        g_state = APP_STATE_FIRST_MEET;
+    } else {
+        g_state = APP_STATE_MK_AUTH;
+    }
 }
 
 static void HandleModeSelection(bool entered)
 {
-    char line[8];
+    char line[MENU_LINE_LEN];
 
     if (entered) {
         SendMenu();
+    } else {
+        /* No action */
     }
     if (!USART_Drv_RxComplete()) {
         return;
+    } else {
+        /* No action */
     }
 
     (void)USART_Drv_TakeLine(line, sizeof(line));
@@ -78,6 +91,22 @@ static void HandleModeSelection(bool entered)
         (void)USART_Drv_SendString("\r\nUnknown option.\r\n");
         SendMenu();
     }
+}
+
+static status_led_mode_t LedModeFor(app_state_t state)
+{
+    status_led_mode_t mode = STATUS_LED_IDLE;
+
+    if (!Session_IsAuthorized()) {
+        mode = STATUS_LED_LOCKED;
+    } else if ((state == APP_STATE_GENERATE_MODE) && Mode_Generate_IsSampling()) {
+        mode = STATUS_LED_QUIET;
+    } else if ((state == APP_STATE_GENERATE_MODE) || (state == APP_STATE_CHANGE_MK_MODE)) {
+        mode = STATUS_LED_BUSY;
+    } else {
+        /* logged in, no write in progress */
+    }
+    return mode;
 }
 
 static bool StateNeedsSession(app_state_t state)
@@ -100,9 +129,14 @@ void App_Run(void)
         if (StateNeedsSession(state) && !Session_IsAuthorized()) {
             g_state = APP_STATE_INIT;
             state = APP_STATE_INIT;
+        } else {
+            /* No action */
         }
         prev_state = state;
 
+        /* Before the switch: a mode about to start ADC sampling finds the
+         * LEDs already dark. */
+        (void)Status_Led_Show(LedModeFor(state));
 
         switch (state) {
         case APP_STATE_INIT:
@@ -112,15 +146,21 @@ void App_Run(void)
         case APP_STATE_FIRST_MEET:
             if (entered) {
                 Mode_FirstMeet_Enter();
+            } else {
+                /* No action */
             }
             if (Mode_FirstMeet_Run() == MODE_DONE) {
                 g_state = APP_STATE_MODE_SELECTION;
+            } else {
+                /* No action */
             }
             break;
 
         case APP_STATE_MK_AUTH:
             if (entered) {
                 Mode_MkAuth_Enter();
+            } else {
+                /* No action */
             }
             switch (Mode_MkAuth_Run()) {
             case MODE_DONE:
@@ -151,18 +191,26 @@ void App_Run(void)
         case APP_STATE_GENERATE_MODE:
             if (entered) {
                 Mode_Generate_Enter();
+            } else {
+                /* No action */
             }
             if (Mode_Generate_Run() != MODE_RUNNING) {
                 g_state = APP_STATE_MODE_SELECTION;
+            } else {
+                /* No action */
             }
             break;
 
         case APP_STATE_CHANGE_MK_MODE:
             if (entered) {
                 Mode_ChangeMk_Enter();
+            } else {
+                /* No action */
             }
             if (Mode_ChangeMk_Run() != MODE_RUNNING) {
                 g_state = APP_STATE_MODE_SELECTION;
+            } else {
+                /* No action */
             }
             break;
 

@@ -121,10 +121,10 @@ def main():
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
 
         bp1 = session.set_checked_breakpoint_by_func("Session_Authenticate")
-        bp2 = session.set_checked_breakpoint_by_line("kdf.c", 71)
+        bp2 = session.set_checked_breakpoint_by_line("kdf.c", 78)
         session.cmd(f"condition {bp2} 'app.c'::g_state == APP_STATE_MK_AUTH")
-        bp3 = session.set_checked_breakpoint_by_line("session.c", 136)
-        bp4 = session.set_checked_breakpoint_by_line("app.c", 127)
+        bp3 = session.set_checked_breakpoint_by_line("session.c", 161)
+        bp4 = session.set_checked_breakpoint_by_line("app.c", 167)
         handlers = {bp1: handle_bp1, bp2: handle_bp2, bp3: handle_bp3, bp4: handle_bp4}
 
         print("\nAll breakpoints verified against the loaded ELF.")

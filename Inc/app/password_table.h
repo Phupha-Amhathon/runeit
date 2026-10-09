@@ -25,9 +25,6 @@ typedef struct {
     pwd_entry_t entries[PWD_TABLE_MAX_ENTRIES];
 } pwd_table_t;
 
-/** Clears the table (all entries considered unused). */
-void Password_Table_InitEmpty(pwd_table_t *table);
-
 /** An entry is "used" when it has a non-empty name. */
 bool Password_Table_EntryIsUsed(const pwd_entry_t *entry);
 

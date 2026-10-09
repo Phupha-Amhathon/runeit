@@ -5,7 +5,7 @@ What it shows:
   - Choosing "Retrieve password" decrypts the whole table once, in one pass,
     into RAM (s_table). That happens before you type anything. This tool
     records it and does not pause for it.
-  - Each id you type pauses at the first line read (mode_retrieve.c:72):
+  - Each id you type pauses at the first line read (mode_retrieve.c:80):
     the raw 48 bytes from flash next to the same entry decrypted in RAM,
     the flash header, and the 10 flash entries around the id.
   - After the serial terminal prints the entry, a second pause (:78) shows
@@ -13,9 +13,9 @@ What it shows:
 
 Breakpoints (4, under the 6-comparator ceiling measured on this board):
   - Mode_Retrieve_Enter        menu choice enters RETRIEVE_MODE (no pause).
-  - mode_retrieve.c:28         table decrypted into RAM (no pause).
-  - mode_retrieve.c:72         first input line read (pause).
-  - mode_retrieve.c:78         entry printed (pause).
+  - mode_retrieve.c:34         table decrypted into RAM (no pause).
+  - mode_retrieve.c:80         first input line read (pause).
+  - mode_retrieve.c:88         entry printed (pause).
 
 Precondition: log in over the serial terminal, then choose "Retrieve
 password". Start this tool before you choose the menu item.
@@ -31,15 +31,14 @@ Requires: pip install pexpect rich
 """
 import os
 import re
-import struct
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, PARTITION_A_ADDR, PARTITION_B_ADDR, PARTITION_HEADER_LEN,
-    PARTITION_MAGIC, build_arg_parser, die, hexstr, locate_gdb, pace,
+    GdbSession, LAYOUT, PARTITION_A_ADDR, PARTITION_B_ADDR,
+    build_arg_parser, die, hexstr, locate_gdb, pace, read_partition_header,
 )
 
 try:
@@ -74,12 +73,6 @@ def fresh_state():
         "name": None, "password": None,
         "window_start": 0, "window": None,
     }
-
-
-def parse_header(raw_bytes):
-    magic, version, _kdf_iter, _salt, _auth, _crc32 = struct.unpack(
-        "<3I16s32sI", bytes(raw_bytes))
-    return {"valid": magic == PARTITION_MAGIC, "version": version}
 
 
 def decode_c_string(raw):
@@ -120,21 +113,21 @@ def read_flash(session, state):
     state["active_sector"] = session.read_value("'partition_store.c'::s_active.sector")
     state["active_addr"] = session.read_int("'partition_store.c'::s_active.addr")
     state["active_version"] = session.read_value("'partition_store.c'::s_active.header.version")
-    state["flash_a"] = parse_header(session.read_bytes(hex(PARTITION_A_ADDR), PARTITION_HEADER_LEN))
-    state["flash_b"] = parse_header(session.read_bytes(hex(PARTITION_B_ADDR), PARTITION_HEADER_LEN))
+    state["flash_a"] = read_partition_header(session, PARTITION_A_ADDR)
+    state["flash_b"] = read_partition_header(session, PARTITION_B_ADDR)
 
 
 def read_window(session, state, entry_id):
     """Ciphertext of the 10 entries around entry_id, read fresh from the active partition."""
     start = window_start_for(entry_id)
-    addr = state["active_addr"] + PARTITION_HEADER_LEN + start * PWD_ENTRY_SIZE
+    addr = state["active_addr"] + LAYOUT["header_len"] + start * PWD_ENTRY_SIZE
     raw = bytes(session.read_bytes(hex(addr), WINDOW_SIZE * PWD_ENTRY_SIZE))
     state["window_start"] = start
     state["window"] = [raw[i * PWD_ENTRY_SIZE:(i + 1) * PWD_ENTRY_SIZE] for i in range(WINDOW_SIZE)]
 
 
 def read_entry(session, state, entry_id):
-    addr = state["active_addr"] + PARTITION_HEADER_LEN + entry_id * PWD_ENTRY_SIZE
+    addr = state["active_addr"] + LAYOUT["header_len"] + entry_id * PWD_ENTRY_SIZE
     state["raw_addr"] = addr
     state["raw"] = bytes(session.read_bytes(hex(addr), PWD_ENTRY_SIZE))
     state["dec_addr"] = f"s_table.entries[{entry_id}]"
@@ -166,7 +159,7 @@ def panel_input(state):
         t.add_row("shown password", Text("—", style=DIM))
     border = "green" if state["step"] == "shown" else ("cyan" if state["step"] == "input" else "grey37")
     return Panel(t, title="[b]Input[/b]", title_align="left",
-                 subtitle="mode_retrieve.c:72 / :78", subtitle_align="left",
+                 subtitle="mode_retrieve.c:80 / :78", subtitle_align="left",
                  border_style=border)
 
 
@@ -216,13 +209,17 @@ def panel_flash(state):
     else:
         active_a = state["active_sector"] == 2
         t.add_row("sector 2 · A",
-                  f"@ 0x{PARTITION_A_ADDR:08x} · {'valid' if a['valid'] else 'INVALID'} · "
+                  f"@ 0x{PARTITION_A_ADDR:08x} · {a['status']} · "
                   f"version {a['version']}" + ("  [active]" if active_a else ""))
         t.add_row("sector 3 · B",
-                  f"@ 0x{PARTITION_B_ADDR:08x} · {'valid' if b['valid'] else 'INVALID'} · "
+                  f"@ 0x{PARTITION_B_ADDR:08x} · {b['status']} · "
                   f"version {b['version']}" + ("  [active]" if not active_a else ""))
+    if a is not None:
+        t.add_row("tag A", Text(hexstr(a["tag"][:8]) + " ...", style=DIM))
+        t.add_row("tag B", Text(hexstr(b["tag"][:8]) + " ...", style=DIM))
     return Panel(t, title="[b]Flash header[/b]", title_align="left",
-                 subtitle="nothing is written in this mode", subtitle_align="left",
+                 subtitle="nothing is written here; the table decrypts only after its tag verifies",
+                 subtitle_align="left",
                  border_style="grey37")
 
 
@@ -235,7 +232,7 @@ def panel_table(state):
         t.add_row("—", "—", Text("—", style=DIM))
         title_loc = "type an id to show the entries around it"
     else:
-        base = state["active_addr"] + PARTITION_HEADER_LEN
+        base = state["active_addr"] + LAYOUT["header_len"]
         for i, chunk in enumerate(state["window"]):
             entry_id = state["window_start"] + i
             style = "bold green" if state["valid"] and entry_id == state["entry_id"] else None
@@ -243,7 +240,7 @@ def panel_table(state):
                       hexstr(chunk), style=style)
         title_loc = (f"entries {state['window_start']}–"
                      f"{state['window_start'] + WINDOW_SIZE - 1} · "
-                     f"active partition + 64, each entry 48 bytes, all ciphertext")
+                     f"active partition + 112, each entry 48 bytes, all ciphertext")
     return Panel(t, title="[b]Password table on flash[/b]", title_align="left",
                  subtitle=title_loc, subtitle_align="left", border_style="grey37")
 
@@ -334,9 +331,9 @@ def main():
         print(f"Connected to the GDB server at {args.host}:{args.port}.")
 
         bp_enter = session.set_checked_breakpoint_by_func("Mode_Retrieve_Enter")
-        bp_decrypted = session.set_checked_breakpoint_by_line("mode_retrieve.c", 28)
-        bp_input = session.set_checked_breakpoint_by_line("mode_retrieve.c", 72)
-        bp_shown = session.set_checked_breakpoint_by_line("mode_retrieve.c", 78)
+        bp_decrypted = session.set_checked_breakpoint_by_line("mode_retrieve.c", 34)
+        bp_input = session.set_checked_breakpoint_by_line("mode_retrieve.c", 80)
+        bp_shown = session.set_checked_breakpoint_by_line("mode_retrieve.c", 88)
         handlers = {bp_enter: handle_enter, bp_decrypted: handle_decrypted,
                     bp_input: handle_input, bp_shown: handle_shown}
 

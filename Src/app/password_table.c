@@ -1,4 +1,3 @@
-#include <string.h>
 #include <stdio.h>
 #include "password_table.h"
 #include "usart_drv.h"
@@ -8,11 +7,6 @@
  * transfer so a multi-line listing is a single atomic USART_Drv_Send(). */
 #define LINE_BUF_LEN 1024U
 static char s_line_buf[LINE_BUF_LEN];
-
-void Password_Table_InitEmpty(pwd_table_t *table)
-{
-    memset(table, 0, sizeof(*table));
-}
 
 void Password_Table_WipeScratch(void)
 {
@@ -27,8 +21,14 @@ bool Password_Table_EntryIsUsed(const pwd_entry_t *entry)
 void Password_Table_ShowEntries(const pwd_table_t *table)
 {
     int written = snprintf(s_line_buf, LINE_BUF_LEN, "\r\n-- Password table --\r\n");
-    size_t pos = (written > 0) ? (size_t)written : 0U;
+    size_t pos = 0U;
     bool any = false;
+
+    if (written > 0) {
+        pos = (size_t)written;
+    } else {
+        /* No action */
+    }
 
     for (uint32_t id = 0U; id < PWD_TABLE_MAX_ENTRIES; id++) {
         const pwd_entry_t *entry = &table->entries[id];
@@ -37,15 +37,23 @@ void Password_Table_ShowEntries(const pwd_table_t *table)
                                 "  %2lu - %s\r\n", (unsigned long)id, entry->name);
             if (written > 0) {
                 pos += (size_t)written;
+            } else {
+                /* No action */
             }
             any = true;
+        } else {
+            /* No action */
         }
     }
     if (!any && (pos < LINE_BUF_LEN)) {
         written = snprintf(s_line_buf + pos, LINE_BUF_LEN - pos, "  (empty)\r\n");
         if (written > 0) {
             pos += (size_t)written;
+        } else {
+            /* No action */
         }
+    } else {
+        /* No action */
     }
 
     USART_Drv_WaitTxReady();
@@ -55,6 +63,7 @@ void Password_Table_ShowEntries(const pwd_table_t *table)
 void Password_Table_ShowEntry(const pwd_table_t *table, uint32_t id)
 {
     int written;
+    uint16_t len = 0U;
 
     if (id >= PWD_TABLE_MAX_ENTRIES) {
         written = snprintf(s_line_buf, LINE_BUF_LEN, "\r\nInvalid id.\r\n");
@@ -65,6 +74,11 @@ void Password_Table_ShowEntry(const pwd_table_t *table, uint32_t id)
         written = snprintf(s_line_buf, LINE_BUF_LEN, "\r\n%s : %s\r\n", entry->name, entry->password);
     }
 
+    if (written > 0) {
+        len = (uint16_t)written;
+    } else {
+        /* No action */
+    }
     USART_Drv_WaitTxReady();
-    (void)USART_Drv_Send((const uint8_t *)s_line_buf, (uint16_t)((written > 0) ? written : 0));
+    (void)USART_Drv_Send((const uint8_t *)s_line_buf, len);
 }

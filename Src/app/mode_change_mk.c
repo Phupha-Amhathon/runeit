@@ -74,6 +74,8 @@ static mode_status_t Apply(void)
         default:
             break;
         }
+    } else {
+        /* No action */
     }
     return status;
 }
@@ -109,6 +111,8 @@ mode_status_t Mode_ChangeMk_Run(void)
             len = USART_Drv_TakeLine(line, sizeof(line));
             status = OnNewEntry(line, len);
             Secure_Zero(line, sizeof(line));
+        } else {
+            /* No action */
         }
         break;
 
@@ -117,6 +121,8 @@ mode_status_t Mode_ChangeMk_Run(void)
             len = USART_Drv_TakeLine(line, sizeof(line));
             status = OnConfirmEntry(line, len);
             Secure_Zero(line, sizeof(line));
+        } else {
+            /* No action */
         }
         break;
 

@@ -14,7 +14,4 @@ void CRC_Drv_Feed(const uint8_t *data, uint32_t len);
 /** Current running CRC value. */
 uint32_t CRC_Drv_Result(void);
 
-/** Convenience one-shot: CRC_Drv_Reset() + CRC_Drv_Feed() + CRC_Drv_Result(). */
-uint32_t CRC_Drv_Compute(const uint8_t *data, uint32_t len);
-
 #endif /* CRC_DRV_H */

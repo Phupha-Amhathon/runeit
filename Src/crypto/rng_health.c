@@ -28,6 +28,8 @@ rng_health_result_t RNG_Health_Check(rng_health_state_t *state, uint16_t sample)
             state->repeat_count++;
             if (state->repeat_count >= RNG_HEALTH_RCT_CUTOFF) {
                 result = RNG_HEALTH_FAIL_REPETITION;
+            } else {
+                /* No action */
             }
         } else {
             state->last_value = sample;
@@ -39,7 +41,11 @@ rng_health_result_t RNG_Health_Check(rng_health_state_t *state, uint16_t sample)
             state->window_match_count++;
             if (state->window_match_count >= RNG_HEALTH_APT_CUTOFF) {
                 result = RNG_HEALTH_FAIL_ADAPTIVE;
+            } else {
+                /* No action */
             }
+        } else {
+            /* No action */
         }
 
         state->window_pos++;
@@ -48,6 +54,8 @@ rng_health_result_t RNG_Health_Check(rng_health_state_t *state, uint16_t sample)
             state->window_ref_value = sample;
             state->window_match_count = 1U;
             state->window_pos = 0U;
+        } else {
+            /* No action */
         }
     }
 

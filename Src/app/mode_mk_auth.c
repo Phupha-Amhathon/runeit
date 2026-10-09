@@ -11,10 +11,11 @@ typedef enum {
 } ma_state_t;
 
 #define LINE_CAP (MK_MAX_LEN + 2U)
+#define MSG_LEN  64U
 
 static ma_state_t s_sub = MA_PROMPT;
 /* Must outlive the call: the UART DMA reads it after Send() returns. */
-static char s_msg[64];
+static char s_msg[MSG_LEN];
 
 static void Send(const char *text)
 {
@@ -40,16 +41,23 @@ static mode_status_t Check(const char *line, size_t len)
     if (len == 0U) {
         Send("\r\nMaster key: ");
         return status;
+    } else {
+        /* No action */
     }
 
     uint32_t started = SysTick_Drv_Millis();
     session_result_t result;
+    const char *verdict;
 
     Send("\r\nChecking, please wait...\r\n");
     result = Session_Authenticate(line, len);
+    if (result == SESSION_OK) {
+        verdict = "Access granted";
+    } else {
+        verdict = "Wrong master key";
+    }
     (void)snprintf(s_msg, sizeof(s_msg), "%s (%lu ms).\r\n",
-                   (result == SESSION_OK) ? "Access granted" : "Wrong master key",
-                   (unsigned long)(SysTick_Drv_Millis() - started));
+                   verdict, (unsigned long)(SysTick_Drv_Millis() - started));
     switch (result) {
     case SESSION_OK:
         Send(s_msg);
@@ -85,6 +93,8 @@ mode_status_t Mode_MkAuth_Run(void)
             size_t len = USART_Drv_TakeLine(line, sizeof(line));
             status = Check(line, len);
             Secure_Zero(line, sizeof(line));
+        } else {
+            /* No action */
         }
         break;
 

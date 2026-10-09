@@ -78,7 +78,13 @@ static bool ValidateCrc(uint32_t addr, const partition_header_t *header)
     CRC_Drv_Feed((const uint8_t *)header, Partition_HeaderCrcLen());
 
     for (offset = 0U; offset < table_len; offset += CRC_CHUNK_LEN) {
-        uint32_t n = ((table_len - offset) < CRC_CHUNK_LEN) ? (table_len - offset) : CRC_CHUNK_LEN;
+        uint32_t n;
+
+        if ((table_len - offset) < CRC_CHUNK_LEN) {
+            n = table_len - offset;
+        } else {
+            n = CRC_CHUNK_LEN;
+        }
         Flash_Drv_Read(table_addr + offset, chunk, n);
         CRC_Drv_Feed(chunk, n);
     }
@@ -116,7 +122,14 @@ void Partition_Store_Init(void)
 
 const partition_info_t *Partition_Store_Active(void)
 {
-    return s_have_active ? &s_active : NULL;
+    const partition_info_t *active = NULL;
+
+    if (s_have_active) {
+        active = &s_active;
+    } else {
+        /* No action */
+    }
+    return active;
 }
 
 bool Partition_Store_Load(const uint8_t enc_key[PARTITION_KEY_LEN], pwd_table_t *out_table)
@@ -127,6 +140,8 @@ bool Partition_Store_Load(const uint8_t enc_key[PARTITION_KEY_LEN], pwd_table_t 
 
     if (!s_have_active) {
         return false;
+    } else {
+        /* No action */
     }
 
     DeriveKeys(enc_key, &keys);
@@ -165,10 +180,16 @@ bool Partition_Store_Commit(const uint8_t enc_key[PARTITION_KEY_LEN],
     bool ok;
 
     if (s_have_active) {
-        bool active_is_a = (s_active.sector == PARTITION_A_SECTOR);
-        target_sector = active_is_a ? PARTITION_B_SECTOR : PARTITION_A_SECTOR;
-        target_addr   = active_is_a ? PARTITION_B_ADDR   : PARTITION_A_ADDR;
+        if (s_active.sector == PARTITION_A_SECTOR) {
+            target_sector = PARTITION_B_SECTOR;
+            target_addr   = PARTITION_B_ADDR;
+        } else {
+            target_sector = PARTITION_A_SECTOR;
+            target_addr   = PARTITION_A_ADDR;
+        }
         new_version   = s_active.header.version + 1U;
+    } else {
+        /* No action */
     }
 
     DeriveKeys(enc_key, &keys);
@@ -212,6 +233,8 @@ bool Partition_Store_Commit(const uint8_t enc_key[PARTITION_KEY_LEN],
     if (ok) {
         s_active = written;
         s_have_active = true;
+    } else {
+        /* No action */
     }
     return ok;
 }

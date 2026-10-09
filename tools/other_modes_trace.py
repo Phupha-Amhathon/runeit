@@ -65,11 +65,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _gdb_trace_common import (  # noqa: E402
-    GdbSession, banner, build_arg_parser, die, dump_base_state, hexstr,
+    GdbSession, LAYOUT, banner, build_arg_parser, die, dump_base_state, hexstr,
     locate_gdb, pace,
 )
 
-PARTITION_HEADER_SIZE = 64
+PARTITION_HEADER_SIZE = 112
 PWD_ENTRY_SIZE = 48  # char name[16] + char password[32], Inc/app/password_table.h
 PWD_TABLE_MAX_ENTRIES = 31  # ids 0-30; mode_retrieve.c's ParseId() returns this for "invalid"
 ENTROPY_BLOCK_SAMPLES = 512  # Inc/crypto/entropy_pool.h
@@ -133,12 +133,12 @@ def first_meet_bp4(session, auto_mode):
 
 
 def setup_first_meet(session):
-    bp1 = session.set_checked_breakpoint_by_line("mode_first_meet.c", 62)
-    bp2 = session.set_checked_breakpoint_by_line("kdf.c", 71)
+    bp1 = session.set_checked_breakpoint_by_line("mode_first_meet.c", 63)
+    bp2 = session.set_checked_breakpoint_by_line("kdf.c", 78)
     session.cmd(f"condition {bp2} 'app.c'::g_state == APP_STATE_FIRST_MEET")
-    bp3 = session.set_checked_breakpoint_by_line("session.c", 170)
+    bp3 = session.set_checked_breakpoint_by_line("session.c", 202)
     session.cmd(f"condition {bp3} 'app.c'::g_state == APP_STATE_FIRST_MEET")
-    bp4 = session.set_checked_breakpoint_by_line("app.c", 117)
+    bp4 = session.set_checked_breakpoint_by_line("app.c", 153)
     print("Type a master key twice at the board's '== FIRST TIME SETUP ==' serial")
     print("prompt to begin.")
     handlers = {bp1: first_meet_bp1, bp2: first_meet_bp2,
@@ -223,13 +223,13 @@ def change_mk_bp5(session, auto_mode):
 
 
 def setup_change_mk(session):
-    bp1 = session.set_checked_breakpoint_by_line("mode_change_mk.c", 85)
+    bp1 = session.set_checked_breakpoint_by_line("mode_change_mk.c", 87)
     bp2 = session.set_checked_breakpoint_by_line("mode_change_mk.c", 66)
-    bp3 = session.set_checked_breakpoint_by_line("kdf.c", 71)
+    bp3 = session.set_checked_breakpoint_by_line("kdf.c", 78)
     session.cmd(f"condition {bp3} 'app.c'::g_state == APP_STATE_CHANGE_MK_MODE")
-    bp4 = session.set_checked_breakpoint_by_line("session.c", 170)
+    bp4 = session.set_checked_breakpoint_by_line("session.c", 202)
     session.cmd(f"condition {bp4} 'app.c'::g_state == APP_STATE_CHANGE_MK_MODE")
-    bp5 = session.set_checked_breakpoint_by_line("app.c", 165)
+    bp5 = session.set_checked_breakpoint_by_line("app.c", 211)
     print("Log in first over the serial terminal, choose 'Change master key' from")
     print("the menu, then type the new key twice to begin.")
     handlers = {bp1: change_mk_bp1, bp2: change_mk_bp2, bp3: change_mk_bp3,
@@ -263,7 +263,7 @@ def retrieve_bp1(session, auto_mode):
     sector = session.read_value("'partition_store.c'::s_active.sector")
     version = session.read_value("'partition_store.c'::s_active.header.version")
     addr = session.read_int("'partition_store.c'::s_active.addr")
-    ciphertext = session.read_bytes(hex(addr + PARTITION_HEADER_SIZE), PWD_ENTRY_SIZE)
+    ciphertext = session.read_bytes(hex(addr + LAYOUT["header_len"]), PWD_ENTRY_SIZE)
     print(banner(1, "BEFORE - ciphertext at rest in flash (entry 0)"))
     print(f"  active partition: sector {sector}, version {version}, @ 0x{addr:08x}")
     print(f"  entry 0 raw bytes, straight from flash (looks like noise):")
@@ -308,8 +308,8 @@ def retrieve_bp3(session, auto_mode):
 
 def setup_retrieve(session):
     bp1 = session.set_checked_breakpoint_by_func("Mode_Retrieve_Enter")
-    bp2 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 28)
-    bp3 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 78)
+    bp2 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 34)
+    bp3 = session.set_checked_breakpoint_by_line("mode_retrieve.c", 88)
     print("Log in first over the serial terminal, then choose 'Retrieve password'")
     print("from the menu to begin. If there's no open session, Mode_Retrieve_Enter")
     print("fails before block [2] or [3] can fire - seeing only block [1] in that")
@@ -372,7 +372,7 @@ def generate_bp3(session, auto_mode):
     print(f"  entry id {entry_id}: name={name_s!r} password={pwd_s!r}")
     session.cmd("next")  # let Session_Save()/Partition_Store_Commit() finish
     addr = session.read_int("'partition_store.c'::s_active.addr")
-    offset = PARTITION_HEADER_SIZE + (entry_id * PWD_ENTRY_SIZE)
+    offset = LAYOUT["header_len"] + (entry_id * PWD_ENTRY_SIZE)
     ciphertext = session.read_bytes(hex(addr + offset), PWD_ENTRY_SIZE)
     print(f"  same entry, now on flash, encrypted (looks like noise):")
     print(f"    {hexstr(ciphertext)}")
@@ -384,9 +384,9 @@ def generate_bp3(session, auto_mode):
 
 
 def setup_generate(session):
-    bp1 = session.set_checked_breakpoint_by_line("mode_generate.c", 333)
-    bp2 = session.set_checked_breakpoint_by_line("mode_generate.c", 349)
-    bp3 = session.set_checked_breakpoint_by_line("mode_generate.c", 387)
+    bp1 = session.set_checked_breakpoint_by_line("mode_generate.c", 370)
+    bp2 = session.set_checked_breakpoint_by_line("mode_generate.c", 386)
+    bp3 = session.set_checked_breakpoint_by_line("mode_generate.c", 424)
     print("Log in over the serial terminal, choose 'Generate password', and answer")
     print("the id/name/class/length prompts first - see other_modes_trace.md. Once")
     print("sampling starts, round 1 pauses for narration, later rounds scroll by.")

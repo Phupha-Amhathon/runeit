@@ -10,6 +10,8 @@
  * 0b010 = 28 cycles. */
 #define ADC_SAMPLE_TIME_28  2U
 
+#define ADC_PRIO_DMA        3U
+
 static volatile bool s_block_ready = false;
 static volatile bool s_block_busy = false;
 
@@ -19,7 +21,7 @@ void ADC_Drv_Init(void)
     RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
 
     /* PA0 and PA1 = analog mode */
-    GPIOA->MODER |= (3U << (0U * 2U)) | (3U << (1U * 2U));
+    GPIOA->MODER |= GPIO_MODER_MODER0 | GPIO_MODER_MODER1;
 
     ADC1->SMPR2 &= ~(ADC_SMPR2_SMP0 | ADC_SMPR2_SMP1);
     ADC1->SMPR2 |= (ADC_SAMPLE_TIME_28 << ADC_SMPR2_SMP0_Pos) |
@@ -32,7 +34,7 @@ void ADC_Drv_Init(void)
     ADC_DMA_STREAM->PAR = (uint32_t)&ADC1->DR;
 
     /* Below the panic button (0) and the UART path (1 and 2, see usart_drv.c). */
-    NVIC_SetPriority(DMA2_Stream0_IRQn, 3);
+    NVIC_SetPriority(DMA2_Stream0_IRQn, ADC_PRIO_DMA);
     NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 }
 
@@ -41,6 +43,8 @@ bool ADC_Drv_StartBlock(adc_drv_channel_t channel, uint16_t *buf, uint16_t count
     if (s_block_busy || (count == 0U) ||
         ((channel != ADC_DRV_CH_TEMP) && (channel != ADC_DRV_CH_LIGHT))) {
         return false;
+    } else {
+        /* No action */
     }
 
     s_block_busy = true;
@@ -78,5 +82,7 @@ void DMA2_Stream0_IRQHandler(void)
         ADC1->CR2 &= ~(ADC_CR2_CONT | ADC_CR2_DMA | ADC_CR2_DDS);
         s_block_busy = false;
         s_block_ready = true;
+    } else {
+        /* No action */
     }
 }

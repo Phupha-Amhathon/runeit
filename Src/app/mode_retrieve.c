@@ -9,6 +9,10 @@ typedef enum {
     RETRIEVE_SUB_ID_WAIT,
 } retrieve_sub_state_t;
 
+#define RET_LINE_LEN       32U
+#define RET_MAX_ID_DIGITS  2U  /* ids are 0-30 */
+#define RET_DECIMAL_BASE   10U
+
 static pwd_table_t s_table;
 static retrieve_sub_state_t s_sub = RETRIEVE_SUB_SHOW_TABLE;
 
@@ -24,6 +28,8 @@ bool Mode_Retrieve_Enter(void)
     if (!Session_LoadTable(&s_table)) {
         Mode_Retrieve_Wipe();
         return false;
+    } else {
+        /* No action */
     }
     return true;
 }
@@ -45,19 +51,21 @@ static uint32_t ParseId(const char *line)
         line++;
     }
     while ((*line >= '0') && (*line <= '9')) {
-        value = (value * 10U) + (uint32_t)(*line - '0');
+        value = (value * RET_DECIMAL_BASE) + (uint32_t)(*line - '0');
         digits++;
         line++;
     }
-    if ((digits == 0U) || (digits > 2U) || (*line != '\0')) {
+    if ((digits == 0U) || (digits > RET_MAX_ID_DIGITS) || (*line != '\0')) {
         value = PWD_TABLE_MAX_ENTRIES;
+    } else {
+        /* No action */
     }
     return value;
 }
 
 bool Mode_Retrieve_Run(void)
 {
-    char line[32];
+    char line[RET_LINE_LEN];
 
     switch (s_sub) {
     case RETRIEVE_SUB_SHOW_TABLE:
@@ -73,9 +81,13 @@ bool Mode_Retrieve_Run(void)
                 Mode_Retrieve_Wipe();
                 Password_Table_WipeScratch();
                 return true; /* mode_op_done -> back to MODE_SELECTION */
+            } else {
+                /* No action */
             }
             Password_Table_ShowEntry(&s_table, ParseId(line));
             SendIdPrompt();
+        } else {
+            /* No action */
         }
         break;
 

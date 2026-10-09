@@ -4,8 +4,13 @@
 
 #define AES_ROUNDS      10U
 #define AES_RKEY_LEN    176U
+#define AES_SBOX_LEN    256U
+#define AES_NB          4U     /* columns in the state */
+#define AES_WORD_BYTES  4U     /* bytes in one column / key word */
+#define AES_GF_MSB      0x80U
+#define AES_GF_POLY     0x1BU  /* x^8 + x^4 + x^3 + x + 1, reduced */
 
-static const uint8_t s_sbox[256] = {
+static const uint8_t s_sbox[AES_SBOX_LEN] = {
     0x63U,0x7cU,0x77U,0x7bU,0xf2U,0x6bU,0x6fU,0xc5U,0x30U,0x01U,0x67U,0x2bU,0xfeU,0xd7U,0xabU,0x76U,
     0xcaU,0x82U,0xc9U,0x7dU,0xfaU,0x59U,0x47U,0xf0U,0xadU,0xd4U,0xa2U,0xafU,0x9cU,0xa4U,0x72U,0xc0U,
     0xb7U,0xfdU,0x93U,0x26U,0x36U,0x3fU,0xf7U,0xccU,0x34U,0xa5U,0xe5U,0xf1U,0x71U,0xd8U,0x31U,0x15U,
@@ -26,7 +31,14 @@ static const uint8_t s_sbox[256] = {
 
 static uint8_t XTime(uint8_t x)
 {
-    return (uint8_t)((uint32_t)(x << 1) ^ (((x & 0x80U) != 0U) ? 0x1BU : 0x00U));
+    uint32_t r = (uint32_t)x << 1U;
+
+    if ((x & AES_GF_MSB) != 0U) {
+        r ^= AES_GF_POLY;
+    } else {
+        /* No action */
+    }
+    return (uint8_t)r;
 }
 
 static void ExpandKey(const uint8_t key[AES128_KEY_LEN], uint8_t rk[AES_RKEY_LEN])
@@ -35,63 +47,68 @@ static void ExpandKey(const uint8_t key[AES128_KEY_LEN], uint8_t rk[AES_RKEY_LEN
     uint32_t i;
 
     (void)memcpy(rk, key, AES128_KEY_LEN);
-    for (i = AES128_KEY_LEN; i < AES_RKEY_LEN; i += 4U) {
-        uint8_t t[4];
+    for (i = AES128_KEY_LEN; i < AES_RKEY_LEN; i += AES_WORD_BYTES) {
+        uint8_t t[AES_WORD_BYTES];
         uint32_t j;
 
-        (void)memcpy(t, &rk[i - 4U], 4U);
+        (void)memcpy(t, &rk[i - AES_WORD_BYTES], AES_WORD_BYTES);
         if ((i % AES128_KEY_LEN) == 0U) {
+            /* RotWord + SubWord, then the round constant on the first byte */
             uint8_t first = t[0];
-            t[0] = (uint8_t)(s_sbox[t[1]] ^ rcon);
-            t[1] = s_sbox[t[2]];
-            t[2] = s_sbox[t[3]];
-            t[3] = s_sbox[first];
+            for (j = 0U; j < (AES_WORD_BYTES - 1U); j++) {
+                t[j] = s_sbox[t[j + 1U]];
+            }
+            t[AES_WORD_BYTES - 1U] = s_sbox[first];
+            t[0] ^= rcon;
             rcon = XTime(rcon);
+        } else {
+            /* No action */
         }
-        for (j = 0U; j < 4U; j++) {
+        for (j = 0U; j < AES_WORD_BYTES; j++) {
             rk[i + j] = (uint8_t)(rk[i - AES128_KEY_LEN + j] ^ t[j]);
         }
     }
 }
 
-static void AddRoundKey(uint8_t st[16], const uint8_t *rk)
+static void AddRoundKey(uint8_t st[AES128_BLOCK_LEN], const uint8_t *rk)
 {
     uint32_t i;
-    for (i = 0U; i < 16U; i++) {
+    for (i = 0U; i < AES128_BLOCK_LEN; i++) {
         st[i] ^= rk[i];
     }
 }
 
-static void SubShift(uint8_t st[16])
+static void SubShift(uint8_t st[AES128_BLOCK_LEN])
 {
     /* State is column-major; row r is shifted left by r columns. */
-    uint8_t t[16];
+    uint8_t t[AES128_BLOCK_LEN];
     uint32_t c;
     uint32_t r;
 
-    for (c = 0U; c < 4U; c++) {
-        for (r = 0U; r < 4U; r++) {
-            t[(4U * c) + r] = s_sbox[st[(4U * ((c + r) % 4U)) + r]];
+    for (c = 0U; c < AES_NB; c++) {
+        for (r = 0U; r < AES_WORD_BYTES; r++) {
+            t[(AES_WORD_BYTES * c) + r] = s_sbox[st[(AES_WORD_BYTES * ((c + r) % AES_NB)) + r]];
         }
     }
-    (void)memcpy(st, t, 16U);
+    (void)memcpy(st, t, AES128_BLOCK_LEN);
 }
 
-static void MixColumns(uint8_t st[16])
+static void MixColumns(uint8_t st[AES128_BLOCK_LEN])
 {
     uint32_t c;
-    for (c = 0U; c < 4U; c++) {
-        uint8_t *p = &st[4U * c];
-        uint8_t a0 = p[0];
-        uint8_t a1 = p[1];
-        uint8_t a2 = p[2];
-        uint8_t a3 = p[3];
-        uint8_t all = (uint8_t)(a0 ^ a1 ^ a2 ^ a3);
+    for (c = 0U; c < AES_NB; c++) {
+        uint8_t *p = &st[AES_WORD_BYTES * c];
+        uint8_t a[AES_WORD_BYTES];
+        uint8_t all = 0U;
+        uint32_t r;
 
-        p[0] ^= (uint8_t)(all ^ XTime((uint8_t)(a0 ^ a1)));
-        p[1] ^= (uint8_t)(all ^ XTime((uint8_t)(a1 ^ a2)));
-        p[2] ^= (uint8_t)(all ^ XTime((uint8_t)(a2 ^ a3)));
-        p[3] ^= (uint8_t)(all ^ XTime((uint8_t)(a3 ^ a0)));
+        for (r = 0U; r < AES_WORD_BYTES; r++) {
+            a[r] = p[r];
+            all ^= p[r];
+        }
+        for (r = 0U; r < AES_WORD_BYTES; r++) {
+            p[r] ^= (uint8_t)(all ^ XTime((uint8_t)(a[r] ^ a[(r + 1U) % AES_WORD_BYTES])));
+        }
     }
 }
 
@@ -100,20 +117,20 @@ void Aes128_EncryptBlock(const uint8_t key[AES128_KEY_LEN],
                          uint8_t out[AES128_BLOCK_LEN])
 {
     uint8_t rk[AES_RKEY_LEN];
-    uint8_t st[16];
+    uint8_t st[AES128_BLOCK_LEN];
     uint32_t round;
 
     ExpandKey(key, rk);
-    (void)memcpy(st, in, 16U);
+    (void)memcpy(st, in, AES128_BLOCK_LEN);
     AddRoundKey(st, rk);
     for (round = 1U; round < AES_ROUNDS; round++) {
         SubShift(st);
         MixColumns(st);
-        AddRoundKey(st, &rk[16U * round]);
+        AddRoundKey(st, &rk[AES128_BLOCK_LEN * round]);
     }
     SubShift(st);
-    AddRoundKey(st, &rk[16U * AES_ROUNDS]);
-    (void)memcpy(out, st, 16U);
+    AddRoundKey(st, &rk[AES128_BLOCK_LEN * AES_ROUNDS]);
+    (void)memcpy(out, st, AES128_BLOCK_LEN);
 
     Secure_Zero(rk, sizeof(rk));
     Secure_Zero(st, sizeof(st));

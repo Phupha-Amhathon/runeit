@@ -6,11 +6,12 @@
 
 #define SHA256_DIGEST_BYTES 32U
 #define SHA256_DIGEST_WORDS  8U
+#define SHA256_BLOCK_BYTES  64U
 
 typedef struct {
-    uint32_t state[8];
+    uint32_t state[SHA256_DIGEST_WORDS];
     uint64_t bitlen;
-    uint8_t  buffer[64];
+    uint8_t  buffer[SHA256_BLOCK_BYTES];
     uint32_t buffer_len;
 } sha256_ctx_t;
 
